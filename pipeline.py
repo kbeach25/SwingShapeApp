@@ -4,7 +4,7 @@ import numpy as np
 import warnings
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandasql
+from pandasql import sqldf
 
 warnings.filterwarnings('ignore')
 
@@ -120,5 +120,175 @@ def encode_side(side):
         return 1
     else:
         return None
+    
+### Average swing shape metric function, competitive swings only
+def individual_swing_shape(batter_df, player_id):
+    batter_df = batter_df[batter_df['batter'] == player_id]
 
-df = getData('2025-03-27', '2025-09-28')
+    # No swings below 10th percentile of bat speed
+    threshold = batter_df['bat_speed'].quantile(0.10)
+    batter_df = batter_df[batter_df['bat_speed'] >= threshold]
+
+    return {
+        'name': batter_df['batter_name'].iloc[0],
+        'batter': player_id,
+        'bat_speed': round(batter_df['bat_speed'].mean(), 3),
+        'attack_angle': round(batter_df['attack_angle'].mean(), 3),
+        'vba': round(batter_df['vba'].mean(), 3),
+        'ttc': round(batter_df['ttc'].mean(), 3)
+    }
+
+### Function for assigning pitch zones, using an 8x8 grid
+def ZoneSections(df, sections):
+    df['ZoneHeight'] = df['ZoneTop'] - df['ZoneBot']
+    sec_height = df['ZoneHeight'] / sections
+    sec_width = 17 / sections
+
+    # start at the top of the strike zone and on the outer left (-8.5 inches)
+    current_height = df['ZoneTop']
+    current_width = -8.5
+
+    pitch_side = df['PitchX']
+    pitch_height = df['PitchZ']
+
+    height_coord = 0
+    width_coord = 0
+    # if the pitch's height means it could be a strike, assign it a general height location
+    if pitch_height < df['ZoneTop'] and pitch_height > df['ZoneBot']:
+        height_coord = 1
+
+        # pitch is in a particular zone if it's between the top coordinate of that zone (current_height)
+        # and the bottom coordinate of that zone (current_height - sec_height)
+        while current_height - sec_height > pitch_height:
+            # end the loop if you reach the bottom of the zone; the pitch is not a strike
+            if height_coord == sections:
+                break
+            
+            height_coord += 1
+            current_height -= sec_height
+
+    if pitch_side > -8.5 and pitch_side < 8.5:
+        width_coord = 1
+        
+        # same logic for inside/outside pitches
+        while current_width + sec_width < pitch_side:
+            if width_coord == sections:
+                break
+
+            width_coord += 1
+            current_width += sec_width
+
+    return f'{height_coord}{width_coord}'
+
+### Function to assign batted ball type (ground ball, fly ball, etc.)
+def hit_class(df):
+    df = df.copy()
+
+    # using mlb definitions for batted ball types
+    conditions = [df['LaunchAngle'] < 10,
+                  (df['LaunchAngle'] >= 10) & (df['LaunchAngle'] <= 25),
+                  (df['LaunchAngle'] > 25) & (df['LaunchAngle'] <= 50),
+                  df['LaunchAngle'] > 50]
+    
+    labels = ['isGB', 'isLD', 'isFB', 'isPU']
+
+    for label, cond in zip(labels, conditions):
+        df[label] = np.where(cond, 1, 0)
+
+    return df
+
+### Get the raw Statcast data
+mlb_data = getData('2025-03-27', '2025-09-28')
+
+### Apply the functions to add the necessary columns
+mlb_data['ttc'] = mlb_data.apply(lambda row: calculate_ttc(row['bat_speed'], row['swing_length']), axis = 1)
+mlb_data['vba'] = calculate_vba(mlb_data['swing_path_tilt'])
+mlb_data['hard_hit_encoded'] = mlb_data['launch_speed'].apply(encode_hard_hit)
+mlb_data['contact_encoded'] = mlb_data['description'].apply(encode_contact)
+mlb_data['pitch_type_encoded'] = mlb_data['pitch_type'].apply(encode_pitch_type)
+mlb_data['pitch_type_specific_encoded'] = mlb_data['pitch_type'].apply(encode_pitch_type_specific)
+mlb_data['pitcher_hand'] = mlb_data['p_throws'].apply(encode_side)
+mlb_data['batter_hand'] = mlb_data['stand'].apply(encode_side)
+
+### MLB requires at least 3.1 plate appearances per scheduled game to be a qualified batter
+# - For 3.1 PA/G, about 3.85 P/PA, 162 games, that's about 1933 pitches to qualify
+# - That's pretty high, so I'll use about half of that. Minimum of 900 pitches to qualify
+qualified_batters = mlb_data['batter'].value_counts()
+qualified_batters = qualified_batters[qualified_batters >= 900].index
+
+results = []
+for player_id in qualified_batters:
+    results.append(individual_swing_shape(mlb_data, player_id))
+
+### This is the first output, the dataframe with individual players and swing shapes
+swing_shape_df = pd.DataFrame(results)
+swing_shape_filename = "SwingShapeData.csv"
+swing_shape_df.to_csv(swing_shape_filename)
+print(f'Saved swing shape data as {swing_shape_filename}')
+
+### mlb_data is pitch-by-pitch data, swing_shape_df is individual player swing shape data
+# - These need to be joined so the individual's swing shape profile is assigned to each pitch they saw
+# - Join using batter, their ID
+swing_shape_df['batter'] = swing_shape_df['batter'].astype(int)
+mlb_data['batter'] = mlb_data['batter'].astype('int64')
+
+pysql = lambda q: sqldf(q, globals())
+
+query = """
+        SELECT
+        shape.name AS Name,
+        shape.batter AS BatterID, 
+        shape.bat_speed AS BatSpeed,
+        shape.attack_angle AS AttackAngle, 
+        shape.vba AS VBA,
+        shape.ttc AS TTC, 
+        mlb.release_speed AS ReleaseSpeed,
+        mlb.pitch_type_encoded AS PitchType,
+        mlb.pitch_type_specific_encoded AS PitchTypeSpecific,
+        mlb.pitcher_hand AS PitcherHand,
+        mlb.batter_hand AS BatterHand,
+        mlb.plate_x AS PitchX,
+        mlb.plate_z AS PitchZ,
+        mlb.description AS Outcome,
+        mlb.sz_top AS ZoneTop,
+        mlb.sz_bot AS ZoneBot,
+
+        -- Outcomes
+        mlb.hard_hit_encoded AS HardHit,
+        mlb.contact_encoded AS Contact,
+        mlb.launch_speed AS ExitVelocity,
+        mlb.launch_angle AS LaunchAngle        
+
+        FROM swing_shape_df AS shape
+
+        INNER JOIN mlb_data AS mlb
+        ON shape.batter = mlb.batter
+
+        -- Only want swings
+        WHERE mlb.description IN ('hit_into_play', 'foul', 'swinging_strike', 
+        'foul_tip', 'swinging_strike_blocked')
+        """
+
+pitch_swing_df = pysql(query)
+
+### Remove rows with missing values that are needed and invalid specific pitch types
+pitch_swing_df = pitch_swing_df.dropna(subset = ['PitchType', 'ReleaseSpeed', 'PitchX', 'PitchZ'])
+pitch_swing_df = pitch_swing_df[pitch_swing_df['PitchTypeSpecific'] != 8]
+pitch_swing_df.loc[pitch_swing_df['Outcome'] == 'foul', ['ExitVelocity', 'LaunchAngle']] = None
+
+### Convert pitch x and z distances from feet to inches
+pitch_swing_df['PitchX'] = pitch_swing_df['PitchX'] * 12
+pitch_swing_df['PitchZ'] = pitch_swing_df['PitchZ'] * 12
+pitch_swing_df['ZoneTop'] = pitch_swing_df['ZoneTop'] * 12
+pitch_swing_df['ZoneBot'] = pitch_swing_df['ZoneBot'] * 12
+
+### Assign pitch zones using coordinate data
+pitch_swing_df['PitchZone'] = pitch_swing_df.apply(lambda row: ZoneSections(row, 8), axis = 1)
+
+### Assign batted ball types
+pitch_swing_df = hit_class(pitch_swing_df)
+
+### Save output
+pitch_swing_filename = "ModelData.csv"
+pitch_swing_df.to_csv(pitch_swing_filename)
+print(f'Full modeling data saved as {pitch_swing_filename}')
