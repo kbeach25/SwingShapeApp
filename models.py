@@ -7,9 +7,12 @@ from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 import joblib
+import os
 
+### Create folder for the models
+os.makedirs("models", exist_ok = True)
 
-df = pd.read_csv("ModelData.csv")
+df = pd.read_csv("data/ModelData.csv")
 
 features = ['BatSpeed', 'AttackAngle', 'VBA', 'TTC', 'ReleaseSpeed', 
             'PitchTypeSpecific', 'PitcherHand', 'BatterHand', 
@@ -48,7 +51,7 @@ contact_xgb_model = Pipeline([
 contact_xgb_model.fit(contact_train[features], contact_train['Contact'])
 
 # - save
-joblib.dump(contact_xgb_model, 'contact_xgb_model.pkl')
+joblib.dump(contact_xgb_model, 'models/contact_xgb_model.pkl')
 
 ### Hard Hit Model
 # - only need balls in play
@@ -72,7 +75,7 @@ hard_hit_model = Pipeline([
 ])
 
 # - save
-joblib.dump(hard_hit_model, 'hard_hit_model.pkl')
+joblib.dump(hard_hit_model, 'models/hard_hit_model.pkl')
 
 ### Batted Ball Profile Model
 # - hit classification function
@@ -125,11 +128,11 @@ bb_prep = ColumnTransformer([
 # - model
 bb_model = Pipeline([
     ('prep', bb_prep),
-    ('lr', LogisticRegression(multi_class = 'multinomial', max_iter = 10000))
+    ('lr', LogisticRegression(max_iter = 10000))
 ])
 
 # - fit
 bb_model.fit(X_train, y_train)
 
 # - save
-joblib.dump(bb_model, 'bb_model.pkl')
+joblib.dump(bb_model, 'models/bb_model.pkl')

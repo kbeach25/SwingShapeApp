@@ -5,8 +5,12 @@ import warnings
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pandasql import sqldf
+import os
 
 warnings.filterwarnings('ignore')
+
+### Create folder for the data
+os.makedirs("data", exist_ok = True)
 
 ### Data gathering function
 # - Using 2025 MLB data
@@ -135,7 +139,11 @@ def individual_swing_shape(batter_df, player_id):
         'bat_speed': round(batter_df['bat_speed'].mean(), 3),
         'attack_angle': round(batter_df['attack_angle'].mean(), 3),
         'vba': round(batter_df['vba'].mean(), 3),
-        'ttc': round(batter_df['ttc'].mean(), 3)
+        'ttc': round(batter_df['ttc'].mean(), 3),
+        'zone_top': round(batter_df['sz_top'].mean(), 3),
+        'zone_bot': round(batter_df['sz_bot'].mean(), 3),
+        'hba': round(batter_df['attack_direction'].mean(), 3),
+        'side': batter_df['stand'].iloc[0]
     }
 
 ### Function for assigning pitch zones, using an 8x8 grid
@@ -220,10 +228,37 @@ results = []
 for player_id in qualified_batters:
     results.append(individual_swing_shape(mlb_data, player_id))
 
-### This is the first output, the dataframe with individual players and swing shapes
+### Convert data to a dataframe
 swing_shape_df = pd.DataFrame(results)
+
+### Need to join batting-stance data from BaseballSavant to swing shape data
+stance_data = pd.read_csv("batting-stance.csv")
+
+swingshape_query = """
+                   SELECT
+                   ss.name AS name,
+                   ss.batter AS batter,
+                   ss.bat_speed AS bat_speed,
+                   ss.attack_angle AS attack_angle,
+                   ss.vba AS vba,
+                   ss.ttc AS ttc,
+                   bs.bat_side AS side,
+                   bs.avg_batter_y_position AS batter_depth,
+                   bs.avg_batter_x_position AS batter_distance,
+                   avg_intercept_y_vs_plate AS contact_depth
+
+                   FROM swing_shape_df AS ss
+
+                   INNER JOIN stance_data AS bs
+                   ON ss.batter = bs.id
+                   """
+
+pysql = lambda q: sqldf(q, globals())
+
+swing_shape_data_full = pysql(swingshape_query)
+### This is the first output, the dataframe with individual players and swing shapes
 swing_shape_filename = "SwingShapeData.csv"
-swing_shape_df.to_csv(swing_shape_filename)
+swing_shape_data_full.to_csv(f"data/{swing_shape_filename}", index = False)
 print(f'Saved swing shape data as {swing_shape_filename}')
 
 ### mlb_data is pitch-by-pitch data, swing_shape_df is individual player swing shape data
@@ -231,8 +266,6 @@ print(f'Saved swing shape data as {swing_shape_filename}')
 # - Join using batter, their ID
 swing_shape_df['batter'] = swing_shape_df['batter'].astype(int)
 mlb_data['batter'] = mlb_data['batter'].astype('int64')
-
-pysql = lambda q: sqldf(q, globals())
 
 query = """
         SELECT
@@ -290,5 +323,5 @@ pitch_swing_df = hit_class(pitch_swing_df)
 
 ### Save output
 pitch_swing_filename = "ModelData.csv"
-pitch_swing_df.to_csv(pitch_swing_filename)
+pitch_swing_df.to_csv(f"data/{pitch_swing_filename}", index = False)
 print(f'Full modeling data saved as {pitch_swing_filename}')
