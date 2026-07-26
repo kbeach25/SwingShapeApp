@@ -143,7 +143,8 @@ def individual_swing_shape(batter_df, player_id):
         'zone_top': round(batter_df['sz_top'].mean(), 3),
         'zone_bot': round(batter_df['sz_bot'].mean(), 3),
         'hba': round(batter_df['attack_direction'].mean(), 3),
-        'side': batter_df['stand'].iloc[0]
+        'side': batter_df['stand'].iloc[0],
+        'swing_length': round(batter_df['swing_length'].mean(), 3)
     }
 
 ### Function for assigning pitch zones, using an 8x8 grid
@@ -242,9 +243,10 @@ swingshape_query = """
                    ss.attack_angle AS attack_angle,
                    ss.vba AS vba,
                    ss.hba AS hba,
-                   ss.zone_top AS zone_top,
-                   ss.zone_bot AS zone_bot,
+                   ss.zone_top * 12 AS zone_top,
+                   ss.zone_bot * 12 AS zone_bot,
                    ss.ttc AS ttc,
+                   ss.swing_length AS swing_length,
                    bs.bat_side AS side,
                    bs.avg_batter_y_position AS batter_depth,
                    bs.avg_batter_x_position AS batter_distance,

@@ -2,19 +2,30 @@ import reflex as rx
 from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 
 ### Root directory, needed to access the data created by the pipeline
 ss_data_path = Path(__file__).resolve().parent.parent / "data" / "SwingShapeData.csv"
 swing_shape_df = pd.read_csv(ss_data_path)
 
+# Pitch by pitch data
+pbp_data_path = Path(__file__).resolve().parent.parent / "data" / "ModelData.csv"
+pbp_df = pd.read_csv(pbp_data_path)
+
 ### Create swing shape plot
 # only show lines when building/troubleshooting app, remove for real use
-show_lines = True
+show_lines = False
 
-def swing_shape_plotting(id, side):
+def swing_shape_plotting(id, side, show_hard_hit):
     mode = "lines+markers" if show_lines else "markers"
 
     df = swing_shape_df[swing_shape_df["batter"] == id]
+
+    # Default to RHB for switch hitters
+    if side == "":
+        if (df["side"] == "R").any() and (df["side"] == "L").any():
+            side = "R"
+            actual_side = "R"
 
     # switch hitter handling
     if side != "":
@@ -22,15 +33,36 @@ def swing_shape_plotting(id, side):
     
     # before anything is selected
     if df.empty:
-        return go.Figure()
+        fig = go.Figure()
+        fig.update_layout(
+            template=None,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            margin=dict(l=0, r=0, t=0, b=0),
+        )
+        return fig
+    
+    # Get the mean batter distance from the plate and mean depth in the box
+    if side == "":
+        mean_dist = swing_shape_df["batter_distance"].mean()
+        mean_depth = swing_shape_df["batter_depth"].mean()
+        actual_side = df["side"].iloc[0]
+    else:
+        mean_dist = swing_shape_df.loc[swing_shape_df["side"] == side, "batter_distance"].mean()
+        mean_depth = swing_shape_df.loc[swing_shape_df["side"] == side, "batter_depth"].mean()
+        actual_side = side
+        
+    # Assign distance and depth based on above or below mean
+    contact_side = df["batter_distance"].iloc[0] - mean_dist
+    depth_offset = df["batter_depth"].iloc[0] - mean_depth
     
     # create 3d visual
     fig = go.Figure()
 
     # home plate figure
-    x = [-8.5, 8.5, 8.5, 0.0, -8.5]
-    y = [0, 0, 0, 0, 0]
-    z = [0, 0, -8.5, -17, -8.5]
+    x = [0, 0, -8.5, -17, -8.5]
+    y = [-8.5, 8.5, 8.5, 0.0, -8.5]
+    z = [0, 0, 0, 0, 0]
 
     fig.add_trace(
         go.Mesh3d(x = x, 
@@ -43,29 +75,359 @@ def swing_shape_plotting(id, side):
                   opacity = 1.0,
                   flatshading = True,
                   showscale = False,
+                  hoverinfo="skip",
                   )
     )
 
     fig.add_trace(
         go.Scatter3d(
-            x = [-8.5, 8.5, 8.5, 0.0, -8.5, -8.5],
-            y=[0, 0, 0, 0, 0, 0],
-            z=[0, 0, -8.5, -17.0, -8.5, 0],
+            x = [0, 0, -8.5, -17.0, -8.5, 0],
+            y = [-8.5, 8.5, 8.5, 0.0, -8.5, -8.5],
+            z = [0, 0, 0, 0, 0, 0],
             mode="lines",
             line=dict(color="white", width=8),
             showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+
+    zone_top = df.iloc[0]["zone_top"]
+    zone_bot = df.iloc[0]["zone_bot"]
+
+    # Strike zone figure outline
+    fig.add_trace(
+        go.Scatter3d(
+            x = [0, 0, 0, 0, 0],
+            y = [-8.5, -8.5, 8.5, 8.5, -8.5],
+            z = [zone_top, zone_bot, zone_bot, zone_top, zone_top],
+            mode = "lines",
+            line = dict(
+                color = "white",
+                width = 6,
+            ),
+            showlegend = False,
+            hoverinfo="skip",
+        )
+    )
+
+    # Strike zone figure fill
+    fig.add_trace(
+        go.Mesh3d(
+            x = [0, 0, 0, 0, 0],
+            y = [-8.5, -8.5, 8.5, 8.5, -8.5],
+            z = [zone_top, zone_bot, zone_bot, zone_top, zone_top],
+
+            i = [0, 0],
+            j = [1, 2],
+            k = [2, 3],
+
+            color = "white",
+            opacity = 0.15,
+            flatshading = True,
+            showscale = False,
+            hoverinfo="skip",
+        )
+    )
+
+    # Add hard hit balls if toggled, fly balls and line drives only
+    if show_hard_hit:
+        hh = pbp_df[(pbp_df["BatterID"] == id) 
+                    & (pbp_df["HardHit"] == 1.0)
+                    & ((pbp_df["isLD"] == 1)
+                    | (pbp_df["isFB"] == 1))
+                    & (
+                        ((actual_side == "R") & (pbp_df["BatterHand"] == 0))
+                        | ((actual_side == "L") & (pbp_df["BatterHand"] == 1))
+                    )
+                    ][["PitchX", "PitchZ"]]
+
+        if not hh.empty:
+            fig.add_trace(
+            go.Scatter3d(
+                x=np.zeros(len(hh)),          
+                y=hh["PitchX"],               
+                z=hh["PitchZ"],               
+                mode="markers",
+                marker=dict(
+                    color="red",
+                    size=5,
+                ),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+            )
+
+    vba = df['vba'].iloc[0]
+
+    # Determine depth and height of the contact point, assuming the hands are in-line with the top of the zone
+    # when the batter's distance from the plate is the mean, their hands are in line with the front of the plate
+    con_depth = df['contact_depth'].iloc[0]
+    con_height = zone_top + 31 * np.sin(np.radians(vba))
+
+    # Plot the baseball and contact point
+    r = 1.45
+    u, v = np.mgrid[0:2*np.pi:12j, 0:np.pi:6j]
+
+    # If it's a righty, flip the side-coordinate to be negative
+    flip = 1
+    if actual_side == "R":
+        flip = -1
+
+    fig.add_trace(
+        go.Surface(
+            x = con_depth + r*np.cos(u)*np.sin(v),
+            y = flip * (contact_side) + r*np.sin(u)*np.sin(v),
+            z = con_height + r*np.cos(v),
+            colorscale=[[0, "white"], [1, "white"]],
+            showscale=False,
+            hoverinfo="skip",
+        )
+    )
+
+    ### Plot the bat, 34 inch bat
+    ### Plot the bat, 34 inch bat
+    bat_bottom = 31
+    bat_top = 3
+
+    # Contact point, adjust so the ball and bat aren't overlapping
+    ball_point = np.array([con_depth, flip * contact_side, con_height])
+    ball_point[0] -= 2.5
+
+    attack_angle = df["attack_angle"].iloc[0]
+
+    if actual_side == "R":
+        attack_angle = -attack_angle
+    else:
+        attack_angle = attack_angle
+
+    aa = np.radians(attack_angle)
+
+    dir_x = -np.sin(aa) if actual_side == "R" else np.sin(aa)
+    dir_y = flip * np.cos(aa)
+    dir_z = np.tan(np.radians(vba))
+
+    bat_dir = np.array([dir_x, dir_y, dir_z])
+    bat_dir = bat_dir / np.linalg.norm(bat_dir)
+
+    knob_point = ball_point - bat_dir * bat_bottom
+    barrel_end = ball_point + bat_dir * bat_top
+
+  #  knob_side_end = ball_point - bat_dir * r
+  #  barrel_side_start = ball_point + bat_dir * r
+
+    def draw_bat(fig, knob_point, barrel_end):
+        knob_point = np.asarray(knob_point, dtype=float)
+        barrel_end = np.asarray(barrel_end, dtype=float)
+
+        axis = barrel_end - knob_point
+        L = np.linalg.norm(axis)
+        axis /= L
+
+        # Build perpendicular basis
+        tmp = np.array([0., 0., 1.]) if abs(axis[2]) < 0.95 else np.array([1., 0., 0.])
+        u = np.cross(axis, tmp)
+        u /= np.linalg.norm(u)
+        v = np.cross(axis, u)
+
+        theta = np.linspace(0, 2*np.pi, 48)
+        s = np.linspace(0, 1, 80)
+
+        X = np.zeros((len(s), len(theta)))
+        Y = np.zeros_like(X)
+        Z = np.zeros_like(X)
+
+        for i, t in enumerate(s):
+            center = knob_point + t * (barrel_end - knob_point)
+
+            d = t * L  # inches from knob
+
+            # Radius profile (inches)
+            if d < 0.18:
+                r = 0.88
+            elif d < 0.6:
+                t = (d - 0.18) / 0.42
+                r = 0.88 - (0.88 - 0.65) * (3*t**2 - 2*t**3)
+            elif d < 10:
+                r = 0.65 - (0.65 - 0.52) * (d - 1) / 9
+            elif d < 28:
+                t = (d - 10) / 18
+                r = 0.52 + (1.60 - 0.52) * (3*t**2 - 2*t**3)
+            elif d < L - 0.30:
+                r = 1.60
+            else:
+                t = (d - (L - 0.30)) / 0.30
+                r = 1.60 * (1 - 0.15 * (3*t**2 - 2*t**3))
+            
+
+            circle = (
+                center[:, None]
+                + r * (
+                    u[:, None] * np.cos(theta)
+                    + v[:, None] * np.sin(theta)
+                )
+            )
+
+            X[i] = circle[0]
+            Y[i] = circle[1]
+            Z[i] = circle[2]
+
+        fig.add_trace(
+            go.Surface(
+                x=X,
+                y=Y,
+                z=Z,
+                colorscale=[[0, "#C68642"], [1, "#C68642"]],
+                showscale=False,
+                lighting=dict(
+                    ambient=0.45,
+                    diffuse=0.90,
+                    specular=0.35,
+                    roughness=0.55,
+                ),
+                lightposition=dict(x=100, y=100, z=200),
+                hoverinfo="skip",
+            )
+        )
+
+        # Knob
+        theta = np.linspace(0, 2*np.pi, 60)
+        R = 0.88
+
+        disk = (
+            knob_point[:, None]
+            + R * (u[:, None] * np.cos(theta) + v[:, None] * np.sin(theta))
+        )
+
+        fig.add_trace(
+            go.Mesh3d(
+                x=np.r_[knob_point[0], disk[0]],
+                y=np.r_[knob_point[1], disk[1]],
+                z=np.r_[knob_point[2], disk[2]],
+                i=[0]*len(theta),
+                j=np.arange(1, len(theta)+1),
+                k=np.r_[np.arange(2, len(theta)+1), 1],
+                intensity=np.ones(len(theta) + 1),
+                colorscale = [[0, "#C68642"], [1, "#C68642"]],
+                flatshading = True,
+                showscale = False,
+                hoverinfo="skip",
+            )
+        )   
+
+        # Barrel
+        theta = np.linspace(0, 2*np.pi, 60)
+        R = 1.39
+
+        cap = (
+            barrel_end[:, None]
+            + R * (u[:, None] * np.cos(theta) + v[:, None] * np.sin(theta))
+            )
+
+        fig.add_trace(
+            go.Mesh3d(
+                x=np.r_[barrel_end[0], cap[0]],
+                y=np.r_[barrel_end[1], cap[1]],
+                z=np.r_[barrel_end[2], cap[2]],
+                i=[0]*len(theta),
+                j=np.arange(1, len(theta)+1),
+                k=np.r_[np.arange(2, len(theta)+1), 1],
+                intensity=np.ones(len(theta) + 1),
+                colorscale = [[0, "#C68642"], [1, "#C68642"]],
+                flatshading = True,
+                showscale = False,
+                hoverinfo="skip",
+            )
+        )
+
+    draw_bat(fig, knob_point, barrel_end)
+
+    ### Draw the swing shape, adapted from the old app
+    # Convert swing length to inches
+    swing_len = df["swing_length"].iloc[0]
+    swing_len = swing_len * 12
+
+    # Batter height is about top of the zone * 1.82 assuming belt line is about 55% of height
+    hand_height = 1.82 * zone_top
+
+    # Batter distance is given, needs to be negative for RHB
+    batter_distance = df["batter_distance"].iloc[0] * flip
+
+    # Same direction as the bat
+    x_dir, y_dir, z_dir = bat_dir
+
+    # Swing shape start point (Contact)
+    swing_shape_starting_x = ball_point[0]
+    swing_shape_starting_y = ball_point[1]
+    swing_shape_starting_z = ball_point[2]
+
+    # Swing shape end point (Launch position), bat length is 34, sweet spot around 31
+    # Front of plate, adjusted for depth offset, minus swing length * 2/3
+    swing_shape_ending_x = depth_offset - swing_len * (2/3)
+
+    swing_shape_ending_y = -1 * (batter_distance + 34 * y_dir)
+
+    swing_shape_ending_z = hand_height + 34 * z_dir
+
+    # Swing shape middle point
+    swing_shape_middle_x = depth_offset - swing_len
+    swing_shape_middle_y = 6 * y_dir
+    swing_shape_middle_z = hand_height + 31 - hand_height * 1.2
+
+    # Draw the swing shape curve
+    # Control points
+    P0 = np.array([swing_shape_starting_x, swing_shape_starting_y, swing_shape_starting_z])
+    P1 = np.array([swing_shape_middle_x, swing_shape_middle_y, swing_shape_middle_z])
+    P2 = np.array([swing_shape_ending_x, swing_shape_ending_y, swing_shape_ending_z])
+
+    # Quadratic Bézier curve
+    t = np.linspace(0, 1, 100)
+
+    curve = (
+        (1 - t)[:, None]**2 * P0
+        + 2 * (1 - t)[:, None] * t[:, None] * P1
+        + t[:, None]**2 * P2
+    )
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=curve[:, 0],
+            y=curve[:, 1],
+            z=curve[:, 2],
+            mode="lines",
+            line=dict(color="lightblue", width=12),
+            showlegend=False,
+            hoverinfo="skip",
         )
     )
 
     fig.update_layout(
-        template = "plotly_dark",
-        height = 700,
-        margin = dict(l = 0, r = 0, t = 0, b = 0),
-        scene = dict(
-            xaxis_title = "",
-            yaxis_title = "",
-            zaxis_title = "",
-            aspectmode = "data",
+        template="plotly_dark",
+        height=450,
+        margin=dict(l=0, r=0, t=0, b=0),
+        scene=dict(
+            dragmode = "orbit",
+            xaxis=dict(
+                title="",
+                visible=False,
+                showgrid=False,
+                zeroline=False,
+                showbackground=False,
+            ),
+            yaxis=dict(
+                title="",
+                visible=False,
+                showgrid=False,
+                zeroline=False,
+                showbackground=False,
+            ),
+            zaxis=dict(
+                title="",
+                visible=False,
+                showgrid=False,
+                zeroline=False,
+                showbackground=False,
+            ),
+            aspectmode="data",
         ),
     )
 
@@ -80,6 +442,7 @@ class AppState(rx.State):
     # Swing shape module variables
     selected_batter: int = 0
     selected_side: str = ""
+    show_hard_hit: str = "No"
 
     def set_landing(self):
         self.current_tab = "Landing"
@@ -97,6 +460,49 @@ class AppState(rx.State):
 
     def set_selected_side(self, side: str):
         self.selected_side = side
+
+    def set_show_hard_hit(self, value: str):
+        self.show_hard_hit = value
+
+    def get_stat(self, column: str, decimals: int | None = None) -> str:
+        if self.selected_batter == 0:
+            return ""
+        
+        rows = swing_shape_df[swing_shape_df["batter"] == self.selected_batter]
+
+        if len(rows) > 1:
+            if self.selected_side == "":
+                return ""
+            side = "R" if self.selected_side == "RHB" else "L"
+            rows = rows[rows["side"] == side]
+
+        value = rows.iloc[0][column]
+
+        if decimals is None:
+            return str(value)
+        
+        return f'{value:.{decimals}f}'
+    
+    # Get the swing metrics to list in the swing shape visualizer page
+    @rx.var
+    def bat_speed(self) -> str:
+        return self.get_stat("bat_speed", 1)
+    
+    @rx.var
+    def attack_angle(self) -> str:
+        return self.get_stat("attack_angle", 1)
+    
+    @rx.var
+    def vba(self) -> str:
+        return self.get_stat("vba", 1)
+    
+    @rx.var
+    def ttc(self) -> str:
+        return self.get_stat("ttc")
+    
+    @rx.var
+    def swing_length(self) -> str:
+        return self.get_stat("swing_length", 1)
 
     # Get the distinct player names for the swing shape visualizer
     @rx.var
@@ -119,28 +525,8 @@ class AppState(rx.State):
     # Swing figure
     @rx.var
     def swing_fig(self) -> go.Figure:
-        return swing_shape_plotting(self.selected_batter, self.selected_side, )
-    
-    # Semi temporary: show bat speed just to make sure this works
-    @rx.var
-    def bat_speed(self) -> str:
-        if self.selected_batter == 0:
-            return ""
-        
-        # Only one row for non switc hitters
-        rows = swing_shape_df[swing_shape_df["batter"] == self.selected_batter]
-
-        if len(rows) == 1:
-            return str(rows.iloc[0]["bat_speed"])
-        
-        if self.selected_side == "":
-            return ""
-        
-        side = "R" if self.selected_side == "RHB" else "L"
-
-        row = rows[rows["side"] == side].iloc[0]
-
-        return str(row["bat_speed"])
+        side = "R" if self.selected_side == "RHB" else "L" if self.selected_side == "LHB" else ""
+        return swing_shape_plotting(self.selected_batter, side, self.show_hard_hit == "Yes", )
 
     
 ### Side bar for tab selection
@@ -174,38 +560,74 @@ def swing_shape_tab():
         # Swing Shape module title
         rx.heading("Swing Shape Visualizer", size = "8", ), 
         
-        # Dropdown for names
-        rx.select(items = AppState.player_names,
-                  placeholder = "Select a player",
-                  on_change = AppState.set_selected_batter,
-                  width = "350px", 
-                  ),
+        # Top row
+        rx.hstack(
 
-        # If a switch hitter is chosen, give the option to see which side
-        rx.cond(AppState.sides != [],
-                rx.select(AppState.sides,
-                          placeholder = "Choose a side",
-                          value = AppState.selected_side,
-                          on_change = AppState.set_selected_side,
-                          width = "200px",
-                          ),
-                          ),
+            # Left side
+            rx.vstack(
+                
+                # Dropdown for names
+                rx.select(items = AppState.player_names,
+                        placeholder = "Select a player",
+                        on_change = AppState.set_selected_batter,
+                        width = "350px", 
+                        ),
 
-        # Display the batter's metrics
-        rx.cond(AppState.bat_speed != "",
-                rx.text("Bat Speed: ", AppState.bat_speed,),
+                # If a switch hitter is chosen, give the option to see which side
+                rx.cond(AppState.sides != [],
+                        rx.select(AppState.sides,
+                                placeholder = "Choose a side",
+                                value = AppState.selected_side,
+                                on_change = AppState.set_selected_side,
+                                width = "200px",
+                            ),
+                        
+                        ),
+                        rx.select(
+                            ["No", "Yes"],
+                            placeholder = "View Hard Hit Balls",
+                            value = AppState.show_hard_hit,
+                            on_change = AppState.set_show_hard_hit,
+                            width = "200px",
+                        ),
+
+                        align_items = "start",
+                        spacing = "4",
+            ),
+
+            rx.spacer(),
+
+            # Right side
+            rx.cond(
+                AppState.bat_speed != "",
+                    rx.vstack(
+                    rx.text(f"Bat Speed (MPH): {AppState.bat_speed}"),
+                    rx.text(f"Attack Angle (deg): {AppState.attack_angle}"),
+                    rx.text(f"Vertical Bat Angle (VBA) (deg): {AppState.vba}"),
+                    rx.text(f"Time to Contact (TTC) (s): {AppState.ttc}"),
+                    rx.text(f"Swing Length (ft): {AppState.swing_length}"),
+                    align_items="start",
+                    spacing="2",
+                    margin_left="400px",
+                    ),
                 ),
+            ),
 
-        rx.center(rx.plotly(
-            data = AppState.swing_fig,
-            width = "95%",
-            height = "700px",
-        ),
-        width = "100%",
+        # Swing shape plot
+        rx.center(
+            rx.plotly(
+                data = AppState.swing_fig,
+                width = "95%",
+                height = "450px",
+                config = {
+                    "displayModeBar": False,
+                },
+            ),
+            width = "100%",
         ),
 
-                align_items = "start",
-                spacing = "5",
+        align_items = "start",
+        spacing = "5",
         
     )
 
