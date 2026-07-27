@@ -6,6 +6,8 @@ from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.mixture import GaussianMixture
 import joblib
 import os
 
@@ -136,3 +138,31 @@ bb_model.fit(X_train, y_train)
 
 # - save
 joblib.dump(bb_model, 'models/bb_model.pkl')
+print("Saved batted ball profile model to models/bb_model.pkl")
+
+### GMM Classification
+# - need bat tracking data for this 
+bat_tracking_df = pd.read_csv("data/SwingShapeData.csv")
+
+# - only training on bat tracking data
+gmm_train_features = ["bat_speed", "attack_angle", "vba", "ttc"]
+
+# - there shouldn't be any missing data but just in case
+X = bat_tracking_df[gmm_train_features].dropna()
+
+# - scale features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# - fit gmm model
+gmm = GaussianMixture(n_components = 4, random_state = 42)
+gmm.fit(X_scaled)
+
+# - predict cluster labs and append to dataframe
+bat_tracking_df['GMM_Cluster'] = gmm.predict(scaler.transform(bat_tracking_df[gmm_train_features]))
+bat_tracking_df['GMM_Cluster'] = bat_tracking_df['GMM_Cluster'].astype(str)
+
+# - save cluster results and model
+bat_tracking_df.to_csv("data/clusters.csv")
+joblib.dump(gmm, 'models/gmm.joblib')
+print("Saved cluster data to data/clusters.csv and GMM model to models/gmm.joblib")

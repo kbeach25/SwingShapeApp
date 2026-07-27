@@ -8,9 +8,13 @@ import numpy as np
 ss_data_path = Path(__file__).resolve().parent.parent / "data" / "SwingShapeData.csv"
 swing_shape_df = pd.read_csv(ss_data_path)
 
-# Pitch by pitch data
+### Pitch by pitch data
 pbp_data_path = Path(__file__).resolve().parent.parent / "data" / "ModelData.csv"
 pbp_df = pd.read_csv(pbp_data_path)
+
+### Swing cluster data
+cluster_data_path = Path(__file__).resolve().parent.parent / "data" / "clusters.csv"
+cluster_df = pd.read_csv(cluster_data_path)
 
 ### Create swing shape plot
 # only show lines when building/troubleshooting app, remove for real use
@@ -433,6 +437,62 @@ def swing_shape_plotting(id, side, show_hard_hit):
 
     return fig
 
+### Swing Classification Plotting function
+# Mapping for variable names
+cluster_columns = {
+    "Bat Speed": "bat_speed",
+    "Attack Angle": "attack_angle",
+    "Vertical Bat Angle (VBA)": "vba",
+    "Time to Contact (TTC)": "ttc",
+    "AVG": "avg",
+    "OBP": "obp",
+    "SLG": "slg",
+    "BB%": "bb_rate",
+    "K%": "k_rate",
+}
+        
+def swing_cluster_plot(x_name, y_name):
+
+    x_col = cluster_columns[x_name]
+    y_col = cluster_columns[y_name]
+
+    colors = {
+        0: "red",
+        1: "blue",
+        2: "green",
+        3: "orange",
+    }
+
+    fig = go.Figure()
+
+    for cluster, color in colors.items():
+
+        df = cluster_df[cluster_df["GMM_Cluster"] == cluster]
+
+        fig.add_trace(
+            go.Scatter(
+                x = df[x_col],
+                y = df[y_col],
+                mode = "markers",
+                marker = dict(
+                    color = color,
+                    size = 8,
+                ),
+                hoverinfo = "skip",
+                showlegend = False,
+            )
+        )
+
+        fig.update_layout(
+            template = "plotly_dark",
+            height = 500,
+            xaxis_title = x_name,
+            yaxis_title = y_name,
+            margin = dict(l = 20, r = 20, t = 20, b = 20)
+        )
+
+    return fig
+
 ### App state class
 class AppState(rx.State):
     # Landing page
@@ -444,6 +504,10 @@ class AppState(rx.State):
     selected_side: str = ""
     show_hard_hit: str = "No"
 
+    # Swing classification state variables
+    cluster_x: str = "Bat Speed"
+    cluster_y: str = "Attack Angle"
+
     def set_landing(self):
         self.current_tab = "Landing"
     
@@ -452,6 +516,9 @@ class AppState(rx.State):
 
     def set_swingshape(self):
         self.current_tab = "Swing Shape"
+
+    def set_swingclass(self):
+        self.current_tab = "Swing Classification"
 
     # Functions for swing shape tab
     def set_selected_batter(self, name: str):
@@ -482,6 +549,13 @@ class AppState(rx.State):
             return str(value)
         
         return f'{value:.{decimals}f}'
+    
+    # Functions for swing classification tab
+    def set_cluster_x(self, value: str):
+        self.cluster_x = value
+    
+    def set_cluster_y(self, value: str):
+        self.cluster_y = value
     
     # Get the swing metrics to list in the swing shape visualizer page
     @rx.var
@@ -527,6 +601,15 @@ class AppState(rx.State):
     def swing_fig(self) -> go.Figure:
         side = "R" if self.selected_side == "RHB" else "L" if self.selected_side == "LHB" else ""
         return swing_shape_plotting(self.selected_batter, side, self.show_hard_hit == "Yes", )
+    
+    # Swing classification figure
+    @rx.var
+    def cluster_fig(self) -> go.Figure:
+        return swing_cluster_plot(self.cluster_x, self.cluster_y)
+    
+    @rx.var
+    def cluster_axis_options(self) -> list[str]:
+        return list(cluster_columns.keys())
 
     
 ### Side bar for tab selection
@@ -537,6 +620,7 @@ def sidebar():
                      rx.button("Landing", width = "100%", on_click = AppState.set_landing, ),
                      rx.button("Expected Performance", width = "100%", on_click = AppState.set_model_visual, ),
                      rx.button("Swing Shape Visualization", width = "100%", on_click = AppState.set_swingshape, ),
+                     rx.button("Swing Classification", width = "100%", on_click = AppState.set_swingclass, ),
                      
                      width = "220px",
                      height = "100vh",
@@ -631,6 +715,55 @@ def swing_shape_tab():
         
     )
 
+### Swing Classification Page
+def swing_classification_tab():
+    return rx.vstack(
+
+        # Swing Classification Title
+        rx.heading("Swing Classification"),
+
+        rx.hstack(
+            
+            rx.select(
+                items = AppState.cluster_axis_options,
+                value = AppState.cluster_x,
+                on_change = AppState.set_cluster_x,
+                width = "260px",
+            ),
+
+            rx.select(
+                items = AppState.cluster_axis_options,
+                value = AppState.cluster_y,
+                on_change = AppState.set_cluster_y,
+                width = "260px",
+            ),
+
+            spacing = "4",
+        ),
+
+        rx.plotly(
+            data = AppState.cluster_fig,
+            width = "900px",
+            height = "500px",
+            config = {
+                "displayModeBar": False,
+            },
+        ),
+
+        rx.vstack(
+            rx.text("Notable members of each cluster: "),
+            rx.text("🔴: James Wood (L) and Aaron Judge (R)"),
+            rx.text("🔵: Kyle Schwarber (L) and Mike Trout (R)"),
+            rx.text("🟢: Jonathan Aranda (L) and Mookie Betts (R)"), 
+            rx.text("🟠: Luis Arráez (L) and Jacob Wilson (R)"),
+
+        ),
+
+        align_items = "start",
+        spacing = "5",
+
+        )
+
 ### Main content
 def content():
     return rx.match(
@@ -638,6 +771,7 @@ def content():
         ("Landing", landing_tab()),
         ("Model Visuals", model_visual_tab()),
         ("Swing Shape", swing_shape_tab()),
+        ("Swing Classification", swing_classification_tab()),
         landing_tab(), # default tab
     )
 

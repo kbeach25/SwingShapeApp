@@ -235,6 +235,9 @@ swing_shape_df = pd.DataFrame(results)
 ### Need to join batting-stance data from BaseballSavant to swing shape data
 stance_data = pd.read_csv("batting-stance.csv")
 
+### Need slash line data
+slash_df = pd.read_csv("slash_data.csv")
+
 swingshape_query = """
                    SELECT
                    ss.name AS name,
@@ -250,12 +253,20 @@ swingshape_query = """
                    bs.bat_side AS side,
                    bs.avg_batter_y_position AS batter_depth,
                    bs.avg_batter_x_position AS batter_distance,
-                   avg_intercept_y_vs_plate AS contact_depth
+                   bs.avg_intercept_y_vs_plate AS contact_depth,
+                   slash.batting_avg AS avg,
+                   slash.on_base_percent AS obp,
+                   slash.slg_percent AS slg,
+                   slash.bb_percent AS bb_rate,
+                   slash.k_percent AS k_rate
 
                    FROM swing_shape_df AS ss
 
                    INNER JOIN stance_data AS bs
                    ON ss.batter = bs.id
+
+                   INNER JOIN slash_df AS slash
+                   on ss.batter = slash.player_id
                    """
 
 pysql = lambda q: sqldf(q, globals())
