@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
+import joblib
 
 ### Root directory, needed to access the data created by the pipeline
 ss_data_path = Path(__file__).resolve().parent.parent / "data" / "SwingShapeData.csv"
@@ -12,9 +13,76 @@ swing_shape_df = pd.read_csv(ss_data_path)
 pbp_data_path = Path(__file__).resolve().parent.parent / "data" / "ModelData.csv"
 pbp_df = pd.read_csv(pbp_data_path)
 
-### Swing cluster data
+### Swing cluster data and create summary table
 cluster_data_path = Path(__file__).resolve().parent.parent / "data" / "clusters.csv"
 cluster_df = pd.read_csv(cluster_data_path)
+
+cluster_summary = (
+    cluster_df.groupby("GMM_Cluster", as_index = False)
+              .agg(
+                  bat_speed = ("bat_speed", "mean"),
+                  attack_angle = ("attack_angle", "mean"),
+                  vba = ("vba", "mean"),
+                  ttc = ("ttc", "mean"),
+                  swing_length = ("swing_length", "mean"),
+                  avg = ("avg", "mean"),
+                  obp = ("obp", "mean"),
+                  slg = ("slg", "mean"),
+                  bb_rate = ("bb_rate", "mean"),
+                  k_rate = ("k_rate", "mean"),
+              )
+)
+
+cluster_summary["Cluster"] = cluster_summary["GMM_Cluster"].map({
+    0: "🔴",
+    1: "🔵",
+    2: "🟢",
+    3: "🟠",
+})
+
+cluster_summary["bat_speed"] = cluster_summary["bat_speed"].round(1)
+cluster_summary["attack_angle"] = cluster_summary["attack_angle"].round(1)
+cluster_summary["vba"] = cluster_summary["vba"].round(1)
+cluster_summary["ttc"] = cluster_summary["ttc"].round(3)
+cluster_summary["swing_length"] = cluster_summary["swing_length"].round(1)
+cluster_summary["avg"] = cluster_summary["avg"].round(3)
+cluster_summary["obp"] = cluster_summary["obp"].round(3)
+cluster_summary["slg"] = cluster_summary["slg"].round(3)
+cluster_summary["bb_rate"] = cluster_summary["bb_rate"].round(1)
+cluster_summary["k_rate"] = cluster_summary["k_rate"].round(1)
+
+cluster_summary = cluster_summary.rename(
+    columns={
+        "bat_speed": "Bat Speed",
+        "attack_angle": "Attack Angle",
+        "vba": "VBA",
+        "ttc": "TTC",
+        "swing_length": "Swing Length",
+        "avg": "AVG",
+        "obp": "OBP",
+        "slg": "SLG",
+        "bb_rate": "BB%",
+        "k_rate": "K%",
+    }
+)
+
+cluster_summary = cluster_summary[[
+    "Cluster",
+    "Bat Speed",
+    "Attack Angle",
+    "VBA",
+    "TTC",
+    "Swing Length",
+    "AVG",
+    "OBP",
+    "SLG",
+    "BB%",
+    "K%",
+]]
+
+# Load the GMM model
+gmm_path = Path(__file__).resolve().parent.parent / "models" / "gmm.joblib"
+gmm = joblib.load(gmm_path)
 
 ### Create swing shape plot
 # only show lines when building/troubleshooting app, remove for real use
@@ -507,6 +575,12 @@ class AppState(rx.State):
     # Swing classification state variables
     cluster_x: str = "Bat Speed"
     cluster_y: str = "Attack Angle"
+    
+    # Default classification model inputs
+    bat_speed_input: float = 70.0
+    attack_angle_input: float = 10.0
+    vba_input: float = 30.0
+    ttc_input: float = 0.14
 
     def set_landing(self):
         self.current_tab = "Landing"
@@ -556,6 +630,18 @@ class AppState(rx.State):
     
     def set_cluster_y(self, value: str):
         self.cluster_y = value
+
+    def set_bat_speed_input(self, value):
+        self.bat_speed_input = float(value)
+
+    def set_attack_angle_input(self, value):
+        self.attack_angle_input = float(value)
+
+    def set_vba_input(self, value):
+        self.vba_input = float(value)
+
+    def set_ttc_input(self, value):
+        self.ttc_input = float(value)
     
     # Get the swing metrics to list in the swing shape visualizer page
     @rx.var
@@ -577,6 +663,25 @@ class AppState(rx.State):
     @rx.var
     def swing_length(self) -> str:
         return self.get_stat("swing_length", 1)
+    
+    @rx.var
+    def avg(self) -> str:
+        return self.get_stat("avg", 3)
+    
+    @rx.var
+    def obp(self) -> str:
+        return self.get_stat("obp", 3)
+    
+    @rx.var
+    def slg(self) -> str:
+        return self.get_stat("slg", 3)
+    
+    @rx.var
+    def bb_rate(self) -> str:
+        return self.get_stat("bb_rate", 1)
+    @rx.var
+    def k_rate(self) -> str:
+        return self.get_stat("k_rate", 1)
 
     # Get the distinct player names for the swing shape visualizer
     @rx.var
@@ -596,6 +701,11 @@ class AppState(rx.State):
         
         return ["RHB", "LHB"]
     
+    # Cluster summary
+    @rx.var
+    def cluster_summary(self) -> list[dict]:
+        return cluster_summary.to_dict("records")
+    
     # Swing figure
     @rx.var
     def swing_fig(self) -> go.Figure:
@@ -610,6 +720,20 @@ class AppState(rx.State):
     @rx.var
     def cluster_axis_options(self) -> list[str]:
         return list(cluster_columns.keys())
+    
+    # Function for assigning user cluster probabilities
+    @rx.var
+    def cluster_probs(self) -> list[float]:
+        X = [[
+            self.bat_speed_input,
+            self.attack_angle_input,
+            self.vba_input,
+            self.ttc_input,
+        ]]
+
+        probs = gmm.predict_proba(X)[0]
+
+        return [round(100 * p, 1) for p in probs]
 
     
 ### Side bar for tab selection
@@ -623,7 +747,8 @@ def sidebar():
                      rx.button("Swing Classification", width = "100%", on_click = AppState.set_swingclass, ),
                      
                      width = "220px",
-                     height = "100vh",
+                     min_height = "100vh",
+                     align_self = "stretch",
                      padding = "1em",
                      spacing = "4",
                      border_right = "1px solid lightgray",
@@ -710,6 +835,18 @@ def swing_shape_tab():
             width = "100%",
         ),
 
+        rx.cond(
+            AppState.avg != "",
+            rx.text(
+                f"AVG: {AppState.avg} / "
+                f"OBP: {AppState.obp} / "
+                f"SLG: {AppState.slg} / "
+                f"BB%: {AppState.bb_rate} / "
+                f"K%: {AppState.k_rate}",
+                font_size="14px",
+            ),
+        ),
+
         align_items = "start",
         spacing = "5",
         
@@ -750,19 +887,111 @@ def swing_classification_tab():
             },
         ),
 
-        rx.vstack(
-            rx.text("Notable members of each cluster: "),
-            rx.text("🔴: James Wood (L) and Aaron Judge (R)"),
-            rx.text("🔵: Kyle Schwarber (L) and Mike Trout (R)"),
-            rx.text("🟢: Jonathan Aranda (L) and Mookie Betts (R)"), 
-            rx.text("🟠: Luis Arráez (L) and Jacob Wilson (R)"),
+        rx.hstack(
+            rx.vstack(
+            rx.text("Notable members of each cluster: ", style = {"fontSize": "12px"}),
+            rx.text("🔴: James Wood (L), Aaron Judge (R)", style = {"fontSize": "11px"}),
+            rx.text("🔵: Kyle Schwarber (L), Mike Trout (R)", style = {"fontSize": "11px"}),
+            rx.text("🟢: Jonathan Aranda (L), Mookie Betts (R)", style = {"fontSize": "11px"}), 
+            rx.text("🟠: Luis Arráez (L), Jacob Wilson (R)", style = {"fontSize": "11px"}),
+            width="240px",
+            align_items="start",
+            spacing="4",
+            flex_shrink="0",
+            ),
 
+        # Summary table
+        rx.box(
+            rx.table.root(
+
+                rx.table.header(
+                    rx.table.row(
+                        *[
+                            rx.table.column_header_cell(h)
+                            for h in [
+                                "Cluster",
+                                "Bat Speed",
+                                "Attack Angle",
+                                "VBA",
+                                "TTC",
+                                "Swing Length",
+                                "AVG",
+                                "OBP",
+                                "SLG",
+                                "BB%",
+                                "K%",
+                            ]
+                        ]
+                    ),
+                    style = {"fontSize": "12px"},
+                ),
+
+            rx.table.body(
+                    rx.foreach(
+                        AppState.cluster_summary,
+                        lambda row: rx.table.row(
+
+                            rx.table.cell(row["Cluster"]),
+                            rx.table.cell(row["Bat Speed"]),
+                            rx.table.cell(row["Attack Angle"]),
+                            rx.table.cell(row["VBA"]),
+                            rx.table.cell(row["TTC"]),
+                            rx.table.cell(row["Swing Length"]),
+                            rx.table.cell(row["AVG"]),
+                            rx.table.cell(row["OBP"]),
+                            rx.table.cell(row["SLG"]),
+                            rx.table.cell(row["BB%"]),
+                            rx.table.cell(row["K%"]),
+                        ),
+                    ),
+                    style = {"fontSize": "12px"},
+                ),
+
+            ),
+            flex = "1",
+            overflow_x = "auto",
+            ),
+
+            width = "100%",
+            align_items = "start",
+            spacing = "5",
         ),
 
-        align_items = "start",
-        spacing = "5",
+        rx.heading("Predict Swing Cluster"),
 
-        )
+        rx.input(
+            value = AppState.bat_speed_input,
+            on_change = AppState.set_bat_speed_input,
+            placeholder = "Bat Speed",
+        ),
+
+        rx.input(
+            value = AppState.attack_angle_input,
+            on_change = AppState.set_attack_angle_input,
+            placeholder = "Attack Angle",
+        ),
+
+        rx.input(
+            value = AppState.vba_input,
+            on_change = AppState.set_vba_input,
+            placeholder = "Vertical Bat Angle",
+        ),
+
+        rx.input(
+            value = AppState.ttc_input,
+            on_change = AppState.set_ttc_input,
+            placeholder = "Time to Contact",
+        ),
+
+        rx.vstack(
+            rx.text(f"🔴 Cluster 0: {AppState.cluster_probs[0]}%"),
+            rx.text(f"🔵 Cluster 1: {AppState.cluster_probs[1]}%"),
+            rx.text(f"🟢 Cluster 2: {AppState.cluster_probs[2]}%"),
+            rx.text(f"🟠 Cluster 3: {AppState.cluster_probs[3]}%"),
+            align_items="start",
+            ),
+    )
+
 
 ### Main content
 def content():
@@ -785,7 +1014,7 @@ def index():
                      ),
                      
                      width = "100%",
-                     height = "100vh",
+                     min_height = "100vh",
                      spacing = "0",
                      )
 
