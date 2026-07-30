@@ -756,7 +756,57 @@ def sidebar():
 
 ### Landing page
 def landing_tab():
-    return rx.vstack(rx.heading("Landing"), rx.text("Landing Page"), align_items = "start", )
+    return rx.vstack(
+        # Main title
+        rx.heading("Swing Shape Analysis Tool", size = "8"),
+        rx.text(""),
+
+        # subsection
+        rx.heading("About"),
+
+        rx.text("Welcome to the Swing Shape Analysis Tool. Here, you can use data gathered by bat sensors to explore how bat tracking data and swing mechanics relate to"),
+        rx.text("performance on the field."),
+        rx.text(""),
+        rx.text(""),
+        rx.text("This project was inspired by MLB's public release of bat tracking data. I owned a bat sensor during my playing career so that I could keep track of my swing data,"),
+        rx.text("but never had enough data to understand what each metric meant for my actual hitting performance. With the release of MLB's bat tracking data, in-depth analysis that"),
+        rx.text("compares bat tracking data to on-field performance is now possible. This tool aims to provide users with a comprehensive analysis of their swing data and a roadmap for"),
+        rx.text("maximizing their ability."),
+
+        rx.text(""),
+        rx.text(""),
+
+        # Definitions
+        rx.heading("Metric definitions", size = "5"),
+        rx.heading("Definitions provided by mlb.com", size = "2"),
+
+        rx.text(""),
+        rx.text(""),
+
+        rx.text("Bat Speed (MPH): How fast the sweet spot of the bat is moving, in mph, at the point of contact with the ball (or where the ball and bat would have met, in"),
+        rx.text("case of a swing-and-miss)"),
+
+        rx.text(""),
+
+        rx.text("Attack Angle (deg): The vertical direction that the sweet spot of the bat is traveling at the moment it hits the baseball"),
+
+        rx.text(""),
+
+        rx.text("Swing Length (ft): Captured from the start of a swing until impact point."),
+
+        rx.text(""),
+
+        rx.heading("Definitions provided by blastmotion.com", size = "2"),
+
+        rx.text(""),
+
+        rx.text("Vertical Bat Angle (deg): The angle of the bat relative to horizontal at impact. Zero means the barrel and knob are parallel to the ground. Negative means the"),
+        rx.text("barrel is below the knob."),
+
+        rx.text(""),
+
+        rx.text("Time to Contact (s): Elapsed time from the start of the downswing to impact. A time below 0.14 seconds is a benchmark associated with elite prep-level tools."),
+    )
 
 ### Model visual page
 def model_visual_tab():
