@@ -1,13 +1,11 @@
 import pandas as pd
 import numpy as np
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.mixture import GaussianMixture
 import joblib
 import os
 
@@ -54,6 +52,7 @@ contact_xgb_model.fit(contact_train[features], contact_train['Contact'])
 
 # - save
 joblib.dump(contact_xgb_model, 'models/contact_xgb_model.pkl')
+print("Saved contact model to models/contact_xgb_model.pkl")
 
 ### Hard Hit Model
 # - only need balls in play
@@ -62,11 +61,11 @@ bip_df = df[df['Outcome'].isin(bip_description_vals)]
 
 # - using the same features as the contact model, split into numerical and categorical
 bip_num_cols = bip_df[features].select_dtypes(include = 'number').columns
-bip_cat_cols = [c for c in features if c not in num_cols]
+bip_cat_cols = [c for c in features if c not in bip_num_cols]
 
 # - column transformer
 hard_hit_prep = ColumnTransformer([
-    ('num', 'passthrough', bip_num_cols),
+    ('num', StandardScaler(), bip_num_cols),
     ('cat', OneHotEncoder(handle_unknown = 'ignore'), bip_cat_cols)
      ])
 
@@ -76,8 +75,12 @@ hard_hit_model = Pipeline([
     ('lr', LogisticRegression(max_iter = 1000))
 ])
 
+hard_hit_train = bip_df[bip_df['HardHit'].notna()]
+hard_hit_model.fit(hard_hit_train[features], hard_hit_train['HardHit']) 
+
 # - save
 joblib.dump(hard_hit_model, 'models/hard_hit_model.pkl')
+print("Saved hard hit model to models/hard_hit_model.pkl")
 
 ### Batted Ball Profile Model
 # - hit classification function
@@ -123,14 +126,14 @@ X_train, X_text, y_train, y_test = train_test_split(
 
 # - column transformer
 bb_prep = ColumnTransformer([
-    ('num', 'passthrough', bb_num_cols),
+    ('num', StandardScaler(), bb_num_cols),
     ('cat', OneHotEncoder(handle_unknown = 'ignore'), bb_cat_cols)
 ])
 
 # - model
 bb_model = Pipeline([
     ('prep', bb_prep),
-    ('lr', LogisticRegression(max_iter = 10000))
+    ('lr', LogisticRegression(max_iter = 1000))
 ])
 
 # - fit
@@ -140,29 +143,3 @@ bb_model.fit(X_train, y_train)
 joblib.dump(bb_model, 'models/bb_model.pkl')
 print("Saved batted ball profile model to models/bb_model.pkl")
 
-### GMM Classification
-# - need bat tracking data for this 
-bat_tracking_df = pd.read_csv("data/SwingShapeData.csv")
-
-# - only training on bat tracking data
-gmm_train_features = ["bat_speed", "attack_angle", "vba", "ttc"]
-
-# - there shouldn't be any missing data but just in case
-X = bat_tracking_df[gmm_train_features].dropna()
-
-# - scale features
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
-# - fit gmm model
-gmm = GaussianMixture(n_components = 4, random_state = 42)
-gmm.fit(X_scaled)
-
-# - predict cluster labs and append to dataframe
-bat_tracking_df['GMM_Cluster'] = gmm.predict(scaler.transform(bat_tracking_df[gmm_train_features]))
-bat_tracking_df['GMM_Cluster'] = bat_tracking_df['GMM_Cluster'].astype(str)
-
-# - save cluster results and model
-bat_tracking_df.to_csv("data/clusters.csv")
-joblib.dump(gmm, 'models/gmm.joblib')
-print("Saved cluster data to data/clusters.csv and GMM model to models/gmm.joblib")
