@@ -80,9 +80,12 @@ cluster_summary = cluster_summary[[
     "K%",
 ]]
 
-# Load the GMM model
+# Load the GMM model and scaler, onlyu needed for predicting a user's swing cluster
 gmm_path = Path(__file__).resolve().parent.parent / "models" / "gmm.joblib"
 gmm = joblib.load(gmm_path)
+
+scaler_path = Path(__file__).resolve().parent.parent / "models" / "gmm_scaler.joblib"
+gmm_scaler = joblib.load(scaler_path)
 
 ### Create swing shape plot
 # only show lines when building/troubleshooting app, remove for real use
@@ -476,7 +479,14 @@ def swing_shape_plotting(id, side, show_hard_hit):
         template="plotly_dark",
         height=450,
         margin=dict(l=0, r=0, t=0, b=0),
-        scene=dict(
+        scene = dict(
+            camera = dict(
+            eye = dict(
+                x = 0,
+                y = -2.8 if actual_side == "R" else 2.8,
+                z = 0,
+                ),
+            ),
             dragmode = "orbit",
             xaxis=dict(
                 title="",
@@ -577,10 +587,14 @@ class AppState(rx.State):
     cluster_y: str = "Attack Angle"
     
     # Default classification model inputs
-    bat_speed_input: float = 70.0
-    attack_angle_input: float = 10.0
-    vba_input: float = 30.0
-    ttc_input: float = 0.14
+    bat_speed_input: str = "70.0"
+    attack_angle_input: str = "10.0"
+    vba_input: str = "-30.0"
+    ttc_input: str = "0.14"
+
+    prediction_error: str = ""
+    predicted_probs: list[float] = [0.0, 0.0, 0.0, 0.0]
+    prediction_ready: bool = False
 
     def set_landing(self):
         self.current_tab = "Landing"
@@ -632,16 +646,16 @@ class AppState(rx.State):
         self.cluster_y = value
 
     def set_bat_speed_input(self, value):
-        self.bat_speed_input = float(value)
+        self.bat_speed_input = value
 
     def set_attack_angle_input(self, value):
-        self.attack_angle_input = float(value)
+        self.attack_angle_input = value
 
     def set_vba_input(self, value):
-        self.vba_input = float(value)
+        self.vba_input = value
 
     def set_ttc_input(self, value):
-        self.ttc_input = float(value)
+        self.ttc_input = value
     
     # Get the swing metrics to list in the swing shape visualizer page
     @rx.var
@@ -722,18 +736,30 @@ class AppState(rx.State):
         return list(cluster_columns.keys())
     
     # Function for assigning user cluster probabilities
-    @rx.var
-    def cluster_probs(self) -> list[float]:
-        X = [[
-            self.bat_speed_input,
-            self.attack_angle_input,
-            self.vba_input,
-            self.ttc_input,
-        ]]
+    def predict_cluster(self):
+        try:
+            bat_speed = float(self.bat_speed_input)
+            attack_angle = float(self.attack_angle_input)
+            vba = float(self.vba_input)
+            ttc = float(self.ttc_input)
+        except ValueError:
+            self.prediction_error = "Please enter valid values. Bat Speed and TTC must be positive, VBA must be negative."
+            self.prediction_ready = False
+            return
+        
+        if bat_speed <= 0 or ttc <= 0 or vba > 0:
+            self.prediction_error = "Please enter valid values. Bat Speed and TTC must be positive, VBA must be negative."
+            self.prediction_ready = False
+            return
+        
+        X = [[bat_speed, attack_angle, vba, ttc]]
 
-        probs = gmm.predict_proba(X)[0]
+        X_scaled = gmm_scaler.transform(X)
+        probs = gmm.predict_proba(X_scaled)[0]
 
-        return [round(100 * p, 1) for p in probs]
+        self.predicted_probs = [round(100 * p, 1) for p in probs]
+        self.prediction_error = ""
+        self.prediction_ready = True
 
     
 ### Side bar for tab selection
@@ -817,7 +843,7 @@ def swing_shape_tab():
 
     return rx.vstack(
         # Swing Shape module title
-        rx.heading("Swing Shape Visualizer", size = "8", ), 
+        rx.heading("Swing Shape Visualizer", size = "6", ), 
         
         # Top row
         rx.hstack(
@@ -842,12 +868,16 @@ def swing_shape_tab():
                             ),
                         
                         ),
-                        rx.select(
-                            ["No", "Yes"],
-                            placeholder = "View Hard Hit Balls",
-                            value = AppState.show_hard_hit,
-                            on_change = AppState.set_show_hard_hit,
-                            width = "200px",
+                        rx.hstack(
+                            rx.text("Show Hard Hit Balls?"),
+                            rx.select(
+                                ["No", "Yes"],
+                                value = AppState.show_hard_hit,
+                                on_change = AppState.set_show_hard_hit,
+                                width = "100px",
+                            ),
+                            spacing = "3",
+                            align_items = "center",
                         ),
 
                         align_items = "start",
@@ -872,6 +902,18 @@ def swing_shape_tab():
                 ),
             ),
 
+        rx.cond(
+            AppState.avg != "",
+            rx.text(
+                f"AVG: {AppState.avg} / "
+                f"OBP: {AppState.obp} / "
+                f"SLG: {AppState.slg} / "
+                f"BB%: {AppState.bb_rate} / "
+                f"K%: {AppState.k_rate}",
+                font_size="14px",
+            ),
+        ),
+
         # Swing shape plot
         rx.center(
             rx.plotly(
@@ -883,18 +925,6 @@ def swing_shape_tab():
                 },
             ),
             width = "100%",
-        ),
-
-        rx.cond(
-            AppState.avg != "",
-            rx.text(
-                f"AVG: {AppState.avg} / "
-                f"OBP: {AppState.obp} / "
-                f"SLG: {AppState.slg} / "
-                f"BB%: {AppState.bb_rate} / "
-                f"K%: {AppState.k_rate}",
-                font_size="14px",
-            ),
         ),
 
         align_items = "start",
@@ -928,27 +958,17 @@ def swing_classification_tab():
             spacing = "4",
         ),
 
-        rx.plotly(
-            data = AppState.cluster_fig,
-            width = "900px",
-            height = "500px",
-            config = {
-                "displayModeBar": False,
-            },
-        ),
-
-        rx.hstack(
-            rx.vstack(
-            rx.text("Notable members of each cluster: ", style = {"fontSize": "12px"}),
-            rx.text("🔴: James Wood (L), Aaron Judge (R)", style = {"fontSize": "11px"}),
-            rx.text("🔵: Kyle Schwarber (L), Mike Trout (R)", style = {"fontSize": "11px"}),
-            rx.text("🟢: Jonathan Aranda (L), Mookie Betts (R)", style = {"fontSize": "11px"}), 
-            rx.text("🟠: Luis Arráez (L), Jacob Wilson (R)", style = {"fontSize": "11px"}),
-            width="240px",
-            align_items="start",
-            spacing="4",
-            flex_shrink="0",
+        rx.center(
+            rx.plotly(
+                data=AppState.cluster_fig,
+                width="95%",
+                height="500px",
+                config={
+                    "displayModeBar": False,
+                },
             ),
+            width="100%",
+        ),
 
         # Summary table
         rx.box(
@@ -973,14 +993,13 @@ def swing_classification_tab():
                             ]
                         ]
                     ),
-                    style = {"fontSize": "12px"},
+                    style={"fontSize": "15px"},
                 ),
 
-            rx.table.body(
+                rx.table.body(
                     rx.foreach(
                         AppState.cluster_summary,
                         lambda row: rx.table.row(
-
                             rx.table.cell(row["Cluster"]),
                             rx.table.cell(row["Bat Speed"]),
                             rx.table.cell(row["Attack Angle"]),
@@ -994,52 +1013,99 @@ def swing_classification_tab():
                             rx.table.cell(row["K%"]),
                         ),
                     ),
-                    style = {"fontSize": "12px"},
+                    style={"fontSize": "15px"},
                 ),
 
             ),
-            flex = "1",
-            overflow_x = "auto",
-            ),
-
-            width = "100%",
-            align_items = "start",
-            spacing = "5",
-        ),
-
-        rx.heading("Predict Swing Cluster"),
-
-        rx.input(
-            value = AppState.bat_speed_input,
-            on_change = AppState.set_bat_speed_input,
-            placeholder = "Bat Speed",
-        ),
-
-        rx.input(
-            value = AppState.attack_angle_input,
-            on_change = AppState.set_attack_angle_input,
-            placeholder = "Attack Angle",
-        ),
-
-        rx.input(
-            value = AppState.vba_input,
-            on_change = AppState.set_vba_input,
-            placeholder = "Vertical Bat Angle",
-        ),
-
-        rx.input(
-            value = AppState.ttc_input,
-            on_change = AppState.set_ttc_input,
-            placeholder = "Time to Contact",
+            width="100%",
+            overflow_x="auto",
         ),
 
         rx.vstack(
-            rx.text(f"🔴 Cluster 0: {AppState.cluster_probs[0]}%"),
-            rx.text(f"🔵 Cluster 1: {AppState.cluster_probs[1]}%"),
-            rx.text(f"🟢 Cluster 2: {AppState.cluster_probs[2]}%"),
-            rx.text(f"🟠 Cluster 3: {AppState.cluster_probs[3]}%"),
+            rx.heading("Notable Members of each Cluster", size="6", margin_top="40px",),
+
+            rx.text("🔴 James Wood (L), Aaron Judge (R)", font_size="20px"),
+            rx.text("🔵 Kyle Schwarber (L), Mike Trout (R)", font_size="20px"),
+            rx.text("🟢 Jonathan Aranda (L), Mookie Betts (R)", font_size="20px"),
+            rx.text("🟠 Luis Arráez (L), Jacob Wilson (R)", font_size="20px"),
+
+            width="100%",
             align_items="start",
+            spacing="2",
+        ),
+
+        rx.text(""),
+        rx.heading("Enter your swing data to determine which cluster it identifies most closely with.",
+                   margin_top="40px",),
+
+        rx.hstack(
+            rx.vstack(
+                rx.text("Bat Speed (MPH)"),
+                rx.input(
+                    value = AppState.bat_speed_input,
+                    on_change = AppState.set_bat_speed_input,
+                    width = "100%",
             ),
+            width = "25%",
+        ),
+        
+        rx.vstack(
+            rx.text("Attack Angle (deg)"),
+            rx.input(
+                value = AppState.attack_angle_input,
+                on_change = AppState.set_attack_angle_input,
+                width = "100%",
+            ),
+            width = "25%",
+        ),
+
+        rx.vstack(
+            rx.text("Vertical Bat Angle (deg)"),
+            rx.input(
+                value = AppState.vba_input,
+                on_change = AppState.set_vba_input,
+                width = "100%",
+            ),
+            width = "25%",
+        ),
+
+        rx.vstack(
+            rx.text("Time to Contact (s)"),
+            rx.input(
+                value = AppState.ttc_input,
+                on_change = AppState.set_ttc_input,
+                width = "100%",
+            ),
+            width = "25%",
+        ),
+
+        width = "100%",
+        spacing = "5",
+        ),
+
+        rx.button(
+            "Predict",
+            on_click = AppState.predict_cluster,
+        ),
+
+        rx.cond(
+            AppState.prediction_error != "",
+            rx.text(
+                AppState.prediction_error,
+                color = "red",
+            ),
+        ),
+
+        rx.cond(
+            AppState.prediction_ready,
+            rx.vstack(
+                rx.text(f"🔴: {AppState.predicted_probs[0]}%"),
+                rx.text(f"🔵: {AppState.predicted_probs[1]}%"),
+                rx.text(f"🟢: {AppState.predicted_probs[2]}%"),
+                rx.text(f"🟠: {AppState.predicted_probs[3]}%"),
+                align_items="start",
+            ),
+    ),
     )
 
 

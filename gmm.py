@@ -79,3 +79,7 @@ bat_tracking_df['GMM_Cluster'] = bat_tracking_df['GMM_Cluster'].astype(str)
 bat_tracking_df.to_csv("data/clusters.csv")
 joblib.dump(gmm, 'models/gmm.joblib')
 print("Saved cluster data to data/clusters.csv and GMM model to models/gmm.joblib")
+
+# - save scaler for app
+joblib.dump(scaler, "models/gmm_scaler.joblib")
+print("Saved scaler to models/gmm_scaler.joblib")
