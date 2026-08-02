@@ -13,6 +13,55 @@ swing_shape_df = pd.read_csv(ss_data_path)
 pbp_data_path = Path(__file__).resolve().parent.parent / "data" / "ModelData.csv"
 pbp_df = pd.read_csv(pbp_data_path)
 
+# Create dropdowns for pitch types and other filters
+# pitch type
+pitch_type_specific_options = sorted(
+    pbp_df["PitchTypeSpecific"].dropna().astype(str).unique().tolist()
+)
+
+# pitcher hand
+pitcher_hand_options = ["R", "L"]
+
+# batter hand
+batter_hand_options = ["R", "L"]
+
+# targets
+target_options = ["Contact", "Hard Hit", "Ground Ball", "Line Drive", "Fly Ball", "Pop Up",]
+
+# pitch velocity
+slider_min = int(np.ceil(pbp_df["ReleaseSpeed"].min()))
+slider_max = int(np.floor(pbp_df["ReleaseSpeed"].max()))
+default_speed = (slider_min + slider_max) // 2
+
+# pitch type family dictionary
+pitch_map = {
+    "FF": 0,
+    "FT": 0,
+    "SI": 0,
+    "FC": 0,
+    "SL": 1,
+    "CU": 1,
+    "KC": 1,
+    "CH": 2,
+    "FS": 2,
+    "FO": 2
+}
+
+# parts of the strike zone
+valid_zones = []
+
+for each in pbp_df["PitchZone"].unique():
+
+    zone = int(each)
+
+    first = zone // 10
+    second = zone % 10
+
+    if 1 <= first <= 8 and 1 <= second <= 8:
+        valid_zones.append(each)
+    
+valid_zones = sorted(valid_zones)
+
 ### Swing cluster data and create summary table
 cluster_data_path = Path(__file__).resolve().parent.parent / "data" / "clusters.csv"
 cluster_df = pd.read_csv(cluster_data_path)
@@ -80,12 +129,22 @@ cluster_summary = cluster_summary[[
     "K%",
 ]]
 
-# Load the GMM model and scaler, onlyu needed for predicting a user's swing cluster
+# Load the GMM model and scaler, only needed for predicting a user's swing cluster
 gmm_path = Path(__file__).resolve().parent.parent / "models" / "gmm.joblib"
 gmm = joblib.load(gmm_path)
 
 scaler_path = Path(__file__).resolve().parent.parent / "models" / "gmm_scaler.joblib"
 gmm_scaler = joblib.load(scaler_path)
+
+# Load contact, hard hit, and batted ball models
+contact_model_path = Path(__file__).resolve().parent.parent / "models" / "contact_xgb_model.pkl"
+contact_model = joblib.load(contact_model_path)
+
+hard_hit_model_path = Path(__file__).resolve().parent.parent / "models" / "hard_hit_model.pkl"
+hard_hit_model = joblib.load(hard_hit_model_path)
+
+bb_model_path = Path(__file__).resolve().parent.parent / "models" / "bb_model.pkl"
+bb_model = joblib.load(bb_model_path)
 
 ### Create swing shape plot
 # only show lines when building/troubleshooting app, remove for real use
@@ -577,6 +636,109 @@ class AppState(rx.State):
     current_tab: str = "Landing"
 
     # State variables
+
+    # Strike zone visual tab variables
+    personal_mode: bool = False
+    player_mode: bool = False
+
+    def show_personal_mode(self):
+        self.personal_mode = True
+        self.player_mode = False
+
+    def show_player_mode(self):
+        self.player_mode = True
+        self.personal_mode = False
+
+    target: str = "Contact"
+    pitch_type_specific: str = ""
+    pitch_velocity: int = default_speed
+    pitcher_hand: str = "R"
+    batter_hand: str = "R"
+    model_bat_speed: str = ""
+    model_attack_angle: str = ""
+    model_vba: str = ""
+    model_ttc: str = ""
+    predicted_zone_probs: list[float] = []
+
+    def predict_zone(self):
+        try:
+            bat_speed = float(self.model_bat_speed)
+            attack_angle = float(self.model_attack_angle)
+            vba = float(self.model_vba)
+            ttc = float(self.model_ttc)
+
+        except ValueError:
+            return
+        
+        fastballs = {"FF", "FT", "SI", "FC"}
+        breaking = {"SL", "CU", "KC", "SC", "KN"}
+        offspeed = {"CH", "FS", "FO", "EP"}
+
+        if self.pitch_type_specific in fastballs:
+            pitch_type = 0
+
+        elif self.pitch_type_specific in breaking:
+            pitch_type = 1
+
+        elif self.pitch_type_specific in offspeed:
+            pitch_type = 2
+
+        else:
+            return
+    
+        # encode handedness
+
+        batter_hand = 0 if self.batter_hand == "R" else 1
+        pitcher_hand = 0 if self.pitcher_hand == "R" else 1
+
+        rows = []
+
+        for zone in valid_zones:
+
+            rows.append({
+                "BatSpeed": bat_speed,
+                "AttackAngle": attack_angle,
+                "VBA": vba,
+                "TTC": ttc,
+                "ReleaseSpeed": self.pitch_velocity,
+                "PitchType": pitch_type,
+                "PitchTypeSpecific": self.pitch_type_specific,
+                "PitcherHand": pitcher_hand,
+                "BatterHand": batter_hand,
+                "PitchZone": zone,
+            })
+        
+        pred_df = pd.DataFrame(rows)
+
+        # select model based on target 
+        if self.target == "Contact":
+            probs = contact_model.predict_proba(pred_df)[:,1]
+
+        elif self.target == "Hard Hit":
+            probs = hard_hit_model.predict_proba(pred_df)[:,1]
+        
+        else:
+            probs = bb_model.predict_proba(pred_df)
+
+            classes = list(bb_model.named_steps["lr"].classes_)
+
+            if self.target == "Ground Ball":
+                probs = probs[:, classes.index("isGB")]
+
+            elif self.target == "Line Drive":
+                probs = probs[:, classes.index("isLD")]
+
+            elif self.target == "Fly Ball":
+                probs = probs[:, classes.index("isFB")]
+
+            elif self.target == "Pop Up":
+                probs = probs[:, classes.index("isPU")]
+        
+        self.predicted_zone_probs = probs.tolist()
+
+
+    
+
     # Swing shape module variables
     selected_batter: int = 0
     selected_side: str = ""
@@ -834,9 +996,66 @@ def landing_tab():
         rx.text("Time to Contact (s): Elapsed time from the start of the downswing to impact. A time below 0.14 seconds is a benchmark associated with elite prep-level tools."),
     )
 
+# function for personal strike zone visual
+def personal_visualizer():
+
+    return rx.hstack(
+
+        rx.text("Inputs go here"),
+
+        rx.box(
+            width="500px",
+            height="500px",
+            border="2px solid white",
+        ),
+
+        spacing="8",
+        align_items="start",
+    )
+
 ### Model visual page
 def model_visual_tab():
-    return rx.vstack(rx.heading("Model Visuals"), rx.text("Model Visuals"), align_items = "start", )
+    return rx.vstack(
+        
+        rx.heading(
+            "Swing Decision Visualizer",
+            size = "7",
+            ), 
+                   
+        rx.text(
+            "Enter your bat sensor data or choose an MLB player and see how bat sensor data predicts success against pitch types, locations, and velocities.",
+            font_size = "15px",
+            ),  
+            
+        rx.hstack(
+            rx.button(
+                "Enter Personal Swing Data",
+                on_click = AppState.show_personal_mode,
+            ),
+
+            rx.button(
+                "Choose MLB Player",
+                on_click = AppState.show_player_mode,
+            ),
+            
+            spacing = "5",
+        ),
+
+        rx.cond(
+            AppState.personal_mode,
+
+            personal_visualizer(),
+
+            rx.cond(
+                AppState.player_mode,
+                rx.text("MLB player mode not done"),
+            ),
+        ),
+
+        align_items = "start",
+        spacing = "5",
+        width = "100%",           
+        )
 
 ### Tab for seeing MLB swing shapes
 def swing_shape_tab():
