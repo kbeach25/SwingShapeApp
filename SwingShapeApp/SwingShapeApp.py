@@ -15,9 +15,11 @@ pbp_df = pd.read_csv(pbp_data_path)
 
 # Create dropdowns for pitch types and other filters
 # pitch type
-pitch_type_specific_options = sorted(
-    pbp_df["PitchTypeSpecific"].dropna().astype(str).unique().tolist()
-)
+pitch_type_options = [
+    "FF", "FT", "SI", "FC",
+    "SL", "CU", "KC", "SC", "KN",
+    "CH", "FS", "FO", "EP",
+]
 
 # pitcher hand
 pitcher_hand_options = ["R", "L"]
@@ -42,25 +44,31 @@ pitch_map = {
     "SL": 1,
     "CU": 1,
     "KC": 1,
+    "SC": 1,
+    "KN": 1,
     "CH": 2,
     "FS": 2,
-    "FO": 2
+    "FO": 2,
+    "EP": 2,
+}
+
+pitch_specific_map ={
+    "FF": 0,
+    "SI": 1,
+    "FC": 2,
+    "SL": 3,
+    "CU": 4,
+    "CH": 5,
+    "FS": 6,
+    "ST": 7,
 }
 
 # parts of the strike zone
-valid_zones = []
-
-for each in pbp_df["PitchZone"].unique():
-
-    zone = int(each)
-
-    first = zone // 10
-    second = zone % 10
-
-    if 1 <= first <= 8 and 1 <= second <= 8:
-        valid_zones.append(each)
-    
-valid_zones = sorted(valid_zones)
+valid_zones = [
+    int(f'{row}{col}')
+    for row in range(1, 9)
+    for col in range(1, 9)
+]
 
 ### Swing cluster data and create summary table
 cluster_data_path = Path(__file__).resolve().parent.parent / "data" / "clusters.csv"
@@ -480,8 +488,8 @@ def swing_shape_plotting(id, side, show_hard_hit):
     swing_len = df["swing_length"].iloc[0]
     swing_len = swing_len * 12
 
-    # Batter height is about top of the zone * 1.82 assuming belt line is about 55% of height
-    hand_height = 1.82 * zone_top
+    # Batter height is about top of the zone * 2 assuming belt line is about 50% of height
+    hand_height = 2 * zone_top
 
     # Batter distance is given, needs to be negative for RHB
     batter_distance = df["batter_distance"].iloc[0] * flip
@@ -497,9 +505,7 @@ def swing_shape_plotting(id, side, show_hard_hit):
     # Swing shape end point (Launch position), bat length is 34, sweet spot around 31
     # Front of plate, adjusted for depth offset, minus swing length * 2/3
     swing_shape_ending_x = depth_offset - swing_len * (2/3)
-
     swing_shape_ending_y = -1 * (batter_distance + 34 * y_dir)
-
     swing_shape_ending_z = hand_height + 34 * z_dir
 
     # Swing shape middle point
@@ -630,6 +636,119 @@ def swing_cluster_plot(x_name, y_name):
 
     return fig
 
+prob_columns = {
+    "Contact": "pContact",
+    "Hard Hit": "pHardHit",
+    "Ground Ball": "pGB",
+    "Line Drive": "pLD",
+    "Fly Ball": "pFB",
+    "Pop Up": "pPU",
+}
+
+def strike_zone_plot(probs, target):
+    fig = go.Figure()
+
+    if len(probs) != 64:
+        fig.update_layout(
+            template="plotly_dark",
+            height=500,
+            width=400,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        return fig
+
+    grid = np.array(probs).reshape(8, 8)
+
+    target_centers = {
+        "Contact": 0.750,
+        "Hard Hit": 0.410,
+        "Ground Ball": 0.40,
+        "Line Drive": 0.25,
+        "Fly Ball": 0.25,
+        "Pop Up": 0.10,
+    }
+
+    center = target_centers.get(target, 0.50)
+
+    vmin = float(grid.min())
+    vmax = float(grid.max())
+
+    if vmin < center < vmax:
+        zmid = center
+    else:
+        zmid = (vmin + vmax) / 2
+
+    # create text labels
+    text = [
+        [f"{100 * value:.1f}%" for value in row]
+        for row in grid
+    ]
+
+    fig.add_trace(
+        go.Heatmap(
+            z=grid,
+            x=list(range(1, 9)),
+            y=list(range(8, 0, -1)),
+            zmin=vmin,
+            zmax=vmax,
+            zmid=center,
+            colorscale="RdBu_r",
+            text=text,
+            texttemplate="%{text}",
+            textfont=dict(
+                size=11,
+                color="black",
+            ),
+            showscale=False,
+            hoverinfo="skip",
+            xgap=1,
+            ygap=1,
+        )
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(
+            text=f"Predicted {target} Probability",
+            x=0.25,
+        ),
+        width=500,
+        height=600,
+        margin=dict(l=40, r=80, t=70, b=40),
+
+        xaxis=dict(
+            visible=False,
+            range=[0.5, 8.5],
+            constrain="domain",
+        ),
+
+        yaxis=dict(
+            visible=False,
+            range=[0.5, 8.5],
+            scaleanchor="x",
+            scaleratio=1.4,
+        ),
+
+        plot_bgcolor="white",
+    )
+
+    # outside border
+    fig.add_shape(
+        type="rect",
+        x0=0.5,
+        x1=8.5,
+        y0=0.5,
+        y1=8.5,
+        line=dict(
+            color="black",
+            width=3,
+        ),
+    )
+
+    return fig
+
 ### App state class
 class AppState(rx.State):
     # Landing page
@@ -650,8 +769,9 @@ class AppState(rx.State):
         self.personal_mode = False
 
     target: str = "Contact"
-    pitch_type_specific: str = ""
-    pitch_velocity: int = default_speed
+    selected_pitch_type: str = ""
+    pitch_velocity_min: int = max(slider_min, default_speed - 3)
+    pitch_velocity_max: int = min(slider_max, default_speed + 3)
     pitcher_hand: str = "R"
     batter_hand: str = "R"
     model_bat_speed: str = ""
@@ -661,6 +781,9 @@ class AppState(rx.State):
     predicted_zone_probs: list[float] = []
 
     def predict_zone(self):
+        if self.pitch_velocity_min > self.pitch_velocity_max:
+            return
+
         try:
             bat_speed = float(self.model_bat_speed)
             attack_angle = float(self.model_attack_angle)
@@ -669,74 +792,69 @@ class AppState(rx.State):
 
         except ValueError:
             return
-        
-        fastballs = {"FF", "FT", "SI", "FC"}
-        breaking = {"SL", "CU", "KC", "SC", "KN"}
-        offspeed = {"CH", "FS", "FO", "EP"}
 
-        if self.pitch_type_specific in fastballs:
-            pitch_type = 0
-
-        elif self.pitch_type_specific in breaking:
-            pitch_type = 1
-
-        elif self.pitch_type_specific in offspeed:
-            pitch_type = 2
-
-        else:
+        if self.selected_pitch_type == "":
             return
-    
-        # encode handedness
 
+        pitch_type = pitch_map.get(self.selected_pitch_type)
+        pitch_type_specific = pitch_specific_map.get(self.selected_pitch_type)
+
+        if pitch_type is None or pitch_type_specific is None:
+            return
+
+        # handedness encoding
         batter_hand = 0 if self.batter_hand == "R" else 1
         pitcher_hand = 0 if self.pitcher_hand == "R" else 1
+
+        # midpoint of velocity slider
+        pitch_velocity = (self.pitch_velocity_min + self.pitch_velocity_max) / 2
 
         rows = []
 
         for zone in valid_zones:
-
             rows.append({
                 "BatSpeed": bat_speed,
                 "AttackAngle": attack_angle,
                 "VBA": vba,
                 "TTC": ttc,
-                "ReleaseSpeed": self.pitch_velocity,
+                "ReleaseSpeed": pitch_velocity,
                 "PitchType": pitch_type,
-                "PitchTypeSpecific": self.pitch_type_specific,
+                "PitchTypeSpecific": pitch_type_specific,
                 "PitcherHand": pitcher_hand,
                 "BatterHand": batter_hand,
                 "PitchZone": zone,
             })
-        
+
         pred_df = pd.DataFrame(rows)
 
-        # select model based on target 
+        # select model
         if self.target == "Contact":
-            probs = contact_model.predict_proba(pred_df)[:,1]
+            probs = contact_model.predict_proba(pred_df)[:, 1]
 
         elif self.target == "Hard Hit":
-            probs = hard_hit_model.predict_proba(pred_df)[:,1]
-        
+            probs = hard_hit_model.predict_proba(pred_df)[:, 1]
+
         else:
             probs = bb_model.predict_proba(pred_df)
 
             classes = list(bb_model.named_steps["lr"].classes_)
 
-            if self.target == "Ground Ball":
-                probs = probs[:, classes.index("isGB")]
+            target_class = {
+                "Ground Ball": "isGB",
+                "Line Drive": "isLD",
+                "Fly Ball": "isFB",
+                "Pop Up": "isPU",
+            }[self.target]
 
-            elif self.target == "Line Drive":
-                probs = probs[:, classes.index("isLD")]
+            probs = probs[:, classes.index(target_class)]
 
-            elif self.target == "Fly Ball":
-                probs = probs[:, classes.index("isFB")]
-
-            elif self.target == "Pop Up":
-                probs = probs[:, classes.index("isPU")]
-        
         self.predicted_zone_probs = probs.tolist()
 
+    def set_pitch_velocity_min(self, value):
+        self.pitch_velocity_min = int(value[0])
 
+    def set_pitch_velocity_max(self, value):
+        self.pitch_velocity_max = int(value[0])
     
 
     # Swing shape module variables
@@ -757,6 +875,30 @@ class AppState(rx.State):
     prediction_error: str = ""
     predicted_probs: list[float] = [0.0, 0.0, 0.0, 0.0]
     prediction_ready: bool = False
+
+    def set_target(self, value):
+        self.target = value
+
+    def set_selected_pitch_type(self, value):
+        self.selected_pitch_type = value
+
+    def set_pitcher_hand(self, value):
+        self.pitcher_hand = value
+
+    def set_batter_hand(self, value):
+        self.batter_hand = value
+
+    def set_model_bat_speed(self, value):
+        self.model_bat_speed = value
+
+    def set_model_attack_angle(self, value):
+        self.model_attack_angle = value
+
+    def set_model_vba(self, value):
+        self.model_vba = value
+
+    def set_model_ttc(self, value):
+        self.model_ttc = value
 
     def set_landing(self):
         self.current_tab = "Landing"
@@ -818,6 +960,14 @@ class AppState(rx.State):
 
     def set_ttc_input(self, value):
         self.ttc_input = value
+
+    # variable for strike zone
+    @rx.var
+    def predicted_zone_fig(self) -> go.Figure:
+        return strike_zone_plot(
+            self.predicted_zone_probs,
+            self.target,
+        )
     
     # Get the swing metrics to list in the swing shape visualizer page
     @rx.var
@@ -1001,16 +1151,156 @@ def personal_visualizer():
 
     return rx.hstack(
 
-        rx.text("Inputs go here"),
+        # INPUTS
+        rx.vstack(
 
-        rx.box(
-            width="500px",
-            height="500px",
-            border="2px solid white",
+            rx.heading("Swing Inputs", size="4"),
+
+            rx.text("Bat Speed (mph)"),
+            rx.input(
+                placeholder="70.0",
+                value=AppState.model_bat_speed,
+                on_change=AppState.set_model_bat_speed,
+                width="250px",
+            ),
+
+            rx.text("Attack Angle (°)"),
+            rx.input(
+                placeholder="10.0",
+                value=AppState.model_attack_angle,
+                on_change=AppState.set_model_attack_angle,
+                width="250px",
+            ),
+
+            rx.text("Vertical Bat Angle (VBA) (°)"),
+            rx.input(
+                placeholder="-30.0",
+                value=AppState.model_vba,
+                on_change=AppState.set_model_vba,
+                width="250px",
+            ),
+
+            rx.text("Time to Contact (s)"),
+            rx.input(
+                placeholder="0.140",
+                value=AppState.model_ttc,
+                on_change=AppState.set_model_ttc,
+                width="250px",
+            ),
+
+            rx.text("Batter Hand"),
+            rx.select(
+                batter_hand_options,
+                value=AppState.batter_hand,
+                on_change=AppState.set_batter_hand,
+                width="250px",
+            ),
+
+            rx.divider(),
+
+            rx.heading("Pitch Inputs", size="4"),
+
+            rx.text("Pitch Type"),
+            rx.select(
+                pitch_type_options,
+                placeholder="Select pitch type",
+                value=AppState.selected_pitch_type,
+                on_change=AppState.set_selected_pitch_type,
+                width="250px",
+            ),
+
+            rx.text("Pitcher Hand"),
+            rx.select(
+                pitcher_hand_options,
+                value=AppState.pitcher_hand,
+                on_change=AppState.set_pitcher_hand,
+                width="250px",
+            ),
+
+            rx.text("Pitch Velocity Range (mph)"),
+
+            rx.text(
+                f"{AppState.pitch_velocity_min} - "
+                f"{AppState.pitch_velocity_max} mph"
+            ),
+
+            rx.text("Minimum Velocity"),
+
+            rx.slider(
+                min=slider_min,
+                max=slider_max,
+                step=1,
+                value=[AppState.pitch_velocity_min],
+                on_change=AppState.set_pitch_velocity_min,
+                width="250px",
+            ),
+
+            rx.text("Maximum Velocity"),
+
+            rx.slider(
+                min=slider_min,
+                max=slider_max,
+                step=1,
+                value=[AppState.pitch_velocity_max],
+                on_change=AppState.set_pitch_velocity_max,
+                width="250px",
+            ),
+
+            rx.text("Prediction"),
+
+            rx.select(
+                target_options,
+                value=AppState.target,
+                on_change=AppState.set_target,
+                width="250px",
+            ),
+
+            rx.button(
+                "Update Visual",
+                on_click=AppState.predict_zone,
+                width="250px",
+            ),
+
+            spacing="3",
+            align_items="start",
+            width="300px",
+        ),
+
+        # VISUAL
+        rx.vstack(
+
+            rx.cond(
+                AppState.predicted_zone_probs.length() > 0,
+
+                rx.plotly(
+                    data=AppState.predicted_zone_fig,
+                    config={
+                        "displayModeBar": False,
+                        "staticPlot": True,
+                    },
+                    width="500px",
+                ),
+
+                rx.box(
+                    rx.text(
+                        "Enter swing and pitch information, then click Update Visual.",
+                        text_align="center",
+                    ),
+                    width="500px",
+                    height="500px",
+                    border="2px solid gray",
+                    display="flex",
+                    align_items="center",
+                    justify_content="center",
+                ),
+            ),
+
+            align_items="center",
         ),
 
         spacing="8",
         align_items="start",
+        width="100%",
     )
 
 ### Model visual page
