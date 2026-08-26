@@ -16,9 +16,9 @@ pbp_df = pd.read_csv(pbp_data_path)
 # Create dropdowns for pitch types and other filters
 # pitch type
 pitch_type_options = [
-    "FF", "FT", "SI", "FC",
-    "SL", "CU", "KC", "SC", "KN",
-    "CH", "FS", "FO", "EP",
+    "FF", "SI", "FC",
+    "SL", "CU", 
+    "CH", "FS", 
 ]
 
 # pitcher hand
@@ -38,18 +38,12 @@ default_speed = (slider_min + slider_max) // 2
 # pitch type family dictionary
 pitch_map = {
     "FF": 0,
-    "FT": 0,
     "SI": 0,
     "FC": 0,
     "SL": 1,
     "CU": 1,
-    "KC": 1,
-    "SC": 1,
-    "KN": 1,
     "CH": 2,
     "FS": 2,
-    "FO": 2,
-    "EP": 2,
 }
 
 pitch_specific_map ={
@@ -712,7 +706,8 @@ def strike_zone_plot(probs, target):
         template="plotly_dark",
         title=dict(
             text=f"Predicted {target} Probability",
-            x=0.25,
+            x=0.46,
+            xanchor="center",
         ),
         width=500,
         height=600,
@@ -791,6 +786,18 @@ class AppState(rx.State):
             ttc = float(self.model_ttc)
 
         except ValueError:
+            return
+        
+        if not (60 <= bat_speed <= 90):
+            return
+
+        if not (-20 <= attack_angle <= 20):
+            return
+
+        if not (-50 <= vba <= -1):
+            return
+
+        if not (0.120 <= ttc <= 0.160):
             return
 
         if self.selected_pitch_type == "":
@@ -882,6 +889,25 @@ class AppState(rx.State):
     def set_selected_pitch_type(self, value):
         self.selected_pitch_type = value
 
+        pitch_code = pitch_specific_map.get(value)
+
+        if pitch_code is None:
+            return
+
+        speeds = pbp_df.loc[
+            pbp_df["PitchTypeSpecific"] == pitch_code,
+            "ReleaseSpeed"
+        ]
+
+        if speeds.empty:
+            return
+
+        new_min = int(np.ceil(speeds.min()))
+        new_max = int(np.floor(speeds.max()))
+
+        self.pitch_velocity_min = new_min
+        self.pitch_velocity_max = new_max
+
     def set_pitcher_hand(self, value):
         self.pitcher_hand = value
 
@@ -960,6 +986,47 @@ class AppState(rx.State):
 
     def set_ttc_input(self, value):
         self.ttc_input = value
+
+    @rx.var
+    def pitch_speed_min(self) -> int:
+        if self.selected_pitch_type == "":
+            return slider_min
+
+        pitch_code = pitch_specific_map.get(self.selected_pitch_type)
+
+        if pitch_code is None:
+            return slider_min
+
+        speeds = pbp_df.loc[
+            pbp_df["PitchTypeSpecific"] == pitch_code,
+            "ReleaseSpeed"
+        ]
+
+        if speeds.empty:
+            return slider_min
+
+        return int(np.ceil(speeds.min()))
+
+
+    @rx.var
+    def pitch_speed_max(self) -> int:
+        if self.selected_pitch_type == "":
+            return slider_max
+
+        pitch_code = pitch_specific_map.get(self.selected_pitch_type)
+
+        if pitch_code is None:
+            return slider_max
+
+        speeds = pbp_df.loc[
+            pbp_df["PitchTypeSpecific"] == pitch_code,
+            "ReleaseSpeed"
+        ]
+
+        if speeds.empty:
+            return slider_max
+
+        return int(np.floor(speeds.max()))
 
     # variable for strike zone
     @rx.var
@@ -1156,33 +1223,49 @@ def personal_visualizer():
 
             rx.heading("Swing Inputs", size="4"),
 
-            rx.text("Bat Speed (mph)"),
+            rx.text("Bat Speed (mph): 60 to 90 mph"),
             rx.input(
+                type = "number",
                 placeholder="70.0",
+                min = 60,
+                max = 90,
+                step = 0.1,
                 value=AppState.model_bat_speed,
                 on_change=AppState.set_model_bat_speed,
                 width="250px",
             ),
 
-            rx.text("Attack Angle (°)"),
+            rx.text("Attack Angle (°): -20° to 20°"),
             rx.input(
+                type = "number",
                 placeholder="10.0",
+                min = -20,
+                max = 20,
+                step = 0.1,
                 value=AppState.model_attack_angle,
                 on_change=AppState.set_model_attack_angle,
                 width="250px",
             ),
 
-            rx.text("Vertical Bat Angle (VBA) (°)"),
+            rx.text("Vertical Bat Angle (VBA) (°): -50° to -1°"),
             rx.input(
+                type = "number",
                 placeholder="-30.0",
+                min = -50,
+                max = -1,
+                step = 0.1,
                 value=AppState.model_vba,
                 on_change=AppState.set_model_vba,
                 width="250px",
             ),
 
-            rx.text("Time to Contact (s)"),
+            rx.text("Time to Contact (s): 0.120 to 0.160 s"),
             rx.input(
+                type = "number",
                 placeholder="0.140",
+                min = 0.120,
+                max = 0.160,
+                step = 0.001,
                 value=AppState.model_ttc,
                 on_change=AppState.set_model_ttc,
                 width="250px",
@@ -1227,8 +1310,8 @@ def personal_visualizer():
             rx.text("Minimum Velocity"),
 
             rx.slider(
-                min=slider_min,
-                max=slider_max,
+                min=AppState.pitch_speed_min,
+                max=AppState.pitch_speed_max,
                 step=1,
                 value=[AppState.pitch_velocity_min],
                 on_change=AppState.set_pitch_velocity_min,
@@ -1238,8 +1321,8 @@ def personal_visualizer():
             rx.text("Maximum Velocity"),
 
             rx.slider(
-                min=slider_min,
-                max=slider_max,
+                min=AppState.pitch_speed_min,
+                max=AppState.pitch_speed_max,
                 step=1,
                 value=[AppState.pitch_velocity_max],
                 on_change=AppState.set_pitch_velocity_max,
@@ -1272,12 +1355,26 @@ def personal_visualizer():
             rx.cond(
                 AppState.predicted_zone_probs.length() > 0,
 
-                rx.plotly(
-                    data=AppState.predicted_zone_fig,
-                    config={
-                        "displayModeBar": False,
-                        "staticPlot": True,
-                    },
+                rx.vstack(
+                    rx.plotly(
+                        data=AppState.predicted_zone_fig,
+                        config={
+                            "displayModeBar": False,
+                            "staticPlot": True,
+                        },
+                        width="500px",
+                    ),
+
+                    rx.text(
+                        "Catcher POV",
+                        text_align="center",
+                        width="100%",
+                        font_weight="bold",
+                        transform="translateX(-20px)",
+                    ),
+
+                    spacing="0",
+                    align_items="center",
                     width="500px",
                 ),
 
